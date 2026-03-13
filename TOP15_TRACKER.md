@@ -13,6 +13,7 @@
 - 复核：Binance 24hr ticker
 - 采集脚本：`scripts/top15_collector.py`
 - 定时任务：OpenClaw cron，任务名 `TOP15 collector 5m`
+- 本地展示应用骨架：`apps/top15-dashboard/`
 
 ## 存储位置
 
@@ -89,6 +90,14 @@
 - 开发活跃度时序
 
 这些字段后续可以补，但需要新的可靠数据源，不能先拍脑袋做。
+
+## 本地展示应用
+
+- 目录：`apps/top15-dashboard/`
+- 后端：`apps/top15-dashboard/backend/server.py`
+- 前端：`apps/top15-dashboard/frontend/`
+- 默认监听：`127.0.0.1:3310`
+- 当前阶段：只读 API + 展示页骨架，本地联调通过，未接入现网
 
 ## 备注
 
