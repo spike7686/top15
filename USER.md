@@ -7,10 +7,16 @@ _Learn about the person you're helping. Update this as you go._
 - **Pronouns:** _(optional)_
 - **Timezone:** Asia/Shanghai
 - **Notes:**
+  - 偏好专业风格
+  - 优先使用中文
+  - 出现专业名词时，附带简明解释
+  - 做事先给结论，再展开说明
 
 ## Context
 
-_(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
+- 沟通偏好：专业、直接，先结论后细节。
+- 语言偏好：优先中文。
+- 表达偏好：专业名词需要解释，避免只堆术语。
 
 ---
 
