@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import mimetypes
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,6 +10,7 @@ from urllib.parse import urlparse
 BASE_DIR = Path(__file__).resolve().parent
 WORKDIR = BASE_DIR.parent.parent
 DATA_DIR = WORKDIR / 'data' / 'top15_tracker'
+FRONTEND_DIR = WORKDIR / 'apps' / 'top15-frontend-v2'
 HOST = os.environ.get('TOP15_BACKEND_HOST', '127.0.0.1')
 PORT = int(os.environ.get('TOP15_BACKEND_PORT', '8080'))
 
@@ -33,6 +35,20 @@ def text_response(handler, text, status=200):
     data = text.encode('utf-8')
     handler.send_response(status)
     handler.send_header('Content-Type', 'text/plain; charset=utf-8')
+    handler.send_header('Content-Length', str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def file_response(handler, path: Path):
+    if not path.exists() or not path.is_file():
+        return text_response(handler, 'Not Found', 404)
+    content_type = mimetypes.guess_type(str(path))[0] or 'application/octet-stream'
+    if content_type.startswith('text/') or content_type in ('application/javascript', 'application/json'):
+        content_type += '; charset=utf-8'
+    data = path.read_bytes()
+    handler.send_response(200)
+    handler.send_header('Content-Type', content_type)
     handler.send_header('Content-Length', str(len(data)))
     handler.end_headers()
     handler.wfile.write(data)
@@ -105,6 +121,13 @@ class Handler(BaseHTTPRequestHandler):
                 'snapshots': list_snapshots(),
             })
 
+        if path in ('/', '/index.html'):
+            return file_response(self, FRONTEND_DIR / 'index.html')
+        if path == '/app.js':
+            return file_response(self, FRONTEND_DIR / 'app.js')
+        if path == '/styles.css':
+            return file_response(self, FRONTEND_DIR / 'styles.css')
+
         return text_response(self, 'Not Found', 404)
 
     def log_message(self, fmt, *args):
@@ -119,5 +142,6 @@ if __name__ == '__main__':
         'host': HOST,
         'port': PORT,
         'data_dir': str(DATA_DIR),
+        'frontend_dir': str(FRONTEND_DIR),
     }, ensure_ascii=False))
     server.serve_forever()
