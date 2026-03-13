@@ -1,0 +1,13 @@
+{
+  "latest_snapshot_id": "20260313T092333Z",
+  "captured_at_utc": "2026-03-13T09:23:33.781306+00:00",
+  "count_filtered": 33,
+  "top15_count": 15,
+  "paths": {
+    "raw_json": "data/top15_tracker/snapshots/raw/20260313T092333Z.json",
+    "clean_csv": "data/top15_tracker/snapshots/clean/20260313T092333Z.csv",
+    "clean_json": "data/top15_tracker/snapshots/clean/20260313T092333Z.json",
+    "history_csv": "data/top15_tracker/history.csv",
+    "history_jsonl": "data/top15_tracker/history.jsonl"
+  }
+}
