@@ -6,10 +6,13 @@
 
 - `snapshots/raw/`：每次采集的原始快照 JSON
 - `snapshots/clean/`：每次采集的清洗结果（CSV + JSON）
-- `latest/latest.csv`：最新一轮可直接展示/分析的表格
-- `latest/latest.json`：最新一轮 JSON
-- `latest/manifest.json`：最新轮次索引
-- `history.csv`：长期累计明细表
+- `snapshots/display/`：每次采集的展示宽表 CSV
+- `latest/latest.csv`：最新一轮分析主表
+- `latest/latest.json`：最新一轮分析 JSON
+- `display/latest_display.csv`：最新一轮展示宽表
+- `display/latest_display.json`：最新一轮展示 JSON
+- `history.csv`：长期累计分析主表
+- `history_display.csv`：长期累计展示宽表
 - `history.jsonl`：长期累计 JSONL 明细
 - `meta/coinpaprika_coin_cache.json`：币种元数据缓存（板块、叙事、链接等）
 
@@ -27,6 +30,11 @@
 - `binance_trade_count_24h`：Binance 24h 成交笔数
 - `binance_quote_volume_usd`：Binance 24h 报价成交额
 - `activity_bucket`：交易活跃度分层
+- `market_cap_band`：市值分层
+- `momentum_bucket`：动量分层
+- `turnover_bucket`：换手分层
+- `verify_grade`：Binance 复核强度等级
+- `risk_flags`：风险标签
 
 ## 数据口径
 
@@ -39,3 +47,4 @@
 - `history.csv/jsonl` 为增量追加，不回写历史。
 - 币种元数据使用缓存，避免每 5 分钟重复请求项目详情接口。
 - 板块与叙事字段是为后续展示/研究准备的辅助字段，不替代人工研判。
+- 衍生字段基于真实行情字段和确定性规则生成，不引入凭空捏造的数据。

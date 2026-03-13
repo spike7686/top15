@@ -16,13 +16,24 @@
 
 ## 存储位置
 
+### 分析主表
 - 最新表：`data/top15_tracker/latest/latest.csv`
 - 最新 JSON：`data/top15_tracker/latest/latest.json`
 - 全量历史 CSV：`data/top15_tracker/history.csv`
 - 全量历史 JSONL：`data/top15_tracker/history.jsonl`
-- 每轮原始快照：`data/top15_tracker/snapshots/raw/`
-- 每轮清洗快照：`data/top15_tracker/snapshots/clean/`
-- 元数据缓存：`data/top15_tracker/meta/coinpaprika_coin_cache.json`
+
+### 展示宽表
+- 最新展示表：`data/top15_tracker/display/latest_display.csv`
+- 最新展示 JSON：`data/top15_tracker/display/latest_display.json`
+- 展示历史表：`data/top15_tracker/history_display.csv`
+
+### 每轮快照
+- 原始快照：`data/top15_tracker/snapshots/raw/`
+- 清洗快照：`data/top15_tracker/snapshots/clean/`
+- 展示快照：`data/top15_tracker/snapshots/display/`
+
+### 元数据缓存
+- `data/top15_tracker/meta/coinpaprika_coin_cache.json`
 
 ## 已保留的核心字段
 
@@ -51,7 +62,25 @@
 - narrative_summary（叙事摘要）
 - website / source_code / explorer
 
+## 新增的高价值衍生字段
+
+### 为展示和分层服务
+- market_cap_band（市值分层：Mega/Large/Mid/Small）
+- momentum_bucket（动量分层）
+- turnover_bucket（换手强度分层）
+- verify_grade（复核强度等级）
+- narrative_tags_normalized（标准化叙事标签）
+- risk_flags（风险标签）
+
+## 为什么扩这些字段
+
+这些字段不是为了“看起来专业”，而是为了后续三类工作直接可用：
+1. **展示**：宽表更易读
+2. **筛选**：能直接按分层与风险过滤
+3. **研究**：保留定量字段，不牺牲可追溯性
+
 ## 备注
 
 - 板块与叙事字段来自项目元数据与规则归类，适合作为研究辅助字段。
+- 新增衍生字段均由真实字段计算或规则映射得出，不引入主观臆造数据。
 - 如果后面你要补链上字段（转账数、活跃地址、净流入等），可以在这套表结构上继续扩展。
