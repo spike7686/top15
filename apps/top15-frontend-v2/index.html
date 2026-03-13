@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TOP15 Dashboard v2</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TOP15 ANALYST / DASHBOARD V1</p>
+          <h1>TOP15 市场追踪面板</h1>
+          <p class="subtitle">基于 24h 成交额大于 1.5 亿美元的过滤条件，展示当前 TOP15 数据、风险标签、活跃度与板块分布。</p>
+        </div>
+        <div class="actions">
+          <button id="refreshBtn">立即刷新</button>
+          <button id="autoRefreshBtn" class="ghost">自动刷新：开</button>
+        </div>
+      </header>
+
+      <section class="hero-grid">
+        <article class="hero-card accent">
+          <span>最新快照</span>
+          <strong id="snapshotId">--</strong>
+          <small id="capturedAt">--</small>
+        </article>
+        <article class="hero-card">
+          <span>满足门槛币种数</span>
+          <strong id="filteredCount">--</strong>
+          <small>24h 成交额 &gt; 1.5 亿美元</small>
+        </article>
+        <article class="hero-card">
+          <span>榜单数量</span>
+          <strong id="top15Count">--</strong>
+          <small>当前展示行数</small>
+        </article>
+        <article class="hero-card">
+          <span>领涨币种</span>
+          <strong id="leaderSymbol">--</strong>
+          <small id="leaderChange">--</small>
+        </article>
+      </section>
+
+      <section class="panel filters-panel">
+        <div class="panel-header">
+          <h2>筛选与视图</h2>
+          <p id="statusText">等待加载…</p>
+        </div>
+        <div class="filters">
+          <label>
+            <span>板块</span>
+            <select id="sectorFilter">
+              <option value="">全部</option>
+            </select>
+          </label>
+          <label>
+            <span>风险标签</span>
+            <select id="riskFilter">
+              <option value="">全部</option>
+            </select>
+          </label>
+          <label>
+            <span>活跃度</span>
+            <select id="activityFilter">
+              <option value="">全部</option>
+              <option value="VeryHigh">VeryHigh</option>
+              <option value="High">High</option>
+              <option value="Moderate">Moderate</option>
+              <option value="Low">Low</option>
+              <option value="Unknown">Unknown</option>
+            </select>
+          </label>
+          <label>
+            <span>快照</span>
+            <select id="snapshotFilter">
+              <option value="latest">最新</option>
+            </select>
+          </label>
+          <label class="search-box">
+            <span>搜索</span>
+            <input id="searchInput" type="text" placeholder="代码 / 名称 / 标签" />
+          </label>
+        </div>
+      </section>
+
+      <section class="stats-row" id="summaryCards"></section>
+
+      <section class="layout-grid">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>TOP15 当前榜单</h2>
+            <p>支持筛选、搜索与本地刷新。</p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>币种</th>
+                  <th>板块</th>
+                  <th>市值带</th>
+                  <th>24h涨跌</th>
+                  <th>24h成交额</th>
+                  <th>活跃度</th>
+                  <th>风险</th>
+                </tr>
+              </thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <aside class="side-stack">
+          <section class="panel">
+            <div class="panel-header compact">
+              <h2>前五强势币</h2>
+            </div>
+            <div id="leaderList" class="leader-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header compact">
+              <h2>使用说明</h2>
+            </div>
+            <ul class="notes">
+              <li>该页面仅读取 8080 后端返回的数据。</li>
+              <li>筛选器只影响前端显示，不改动原始数据。</li>
+              <li>自动刷新默认 60 秒轮询一次。</li>
+              <li>当前为本地版，尚未接入现网。</li>
+            </ul>
+          </section>
+        </aside>
+      </section>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>
