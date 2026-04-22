@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Python cache / env
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv/
+venv/
+env/
+
+# Logs / runtime output
+logs/
+*.log
+nohup.out
+
+# Runtime data
+data/
+
+# Local secrets / machine-specific config
+.env
+.env.*
+config/binance_c_strategy.testnet.json
+config/binance_c_strategy.mainnet.json
+
+# Editors / temp files
+*.swp
+*.swo
+*.tmp

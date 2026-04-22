@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "ui-ux-pro-max": {
+      "name": "UI/UX Pro Max",
+      "zip_url": "https://lightmake.site/api/v1/download?slug=ui-ux-pro-max",
+      "source": "skillhub",
+      "version": "0.1.0"
+    },
+    "lsp-python": {
+      "name": "LSP Python",
+      "zip_url": "https://lightmake.site/api/v1/download?slug=lsp-python",
+      "source": "skillhub",
+      "version": "1.1.0"
+    },
+    "superdesign": {
+      "name": "SuperDesign",
+      "zip_url": "https://lightmake.site/api/v1/download?slug=superdesign",
+      "source": "skillhub",
+      "version": "1.0.0"
+    }
+  }
+}

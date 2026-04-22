@@ -12,7 +12,7 @@
         <div>
           <p class="eyebrow">TOP15 ANALYST / DASHBOARD V1</p>
           <h1>TOP15 市场追踪面板</h1>
-          <p class="subtitle">基于 24h 成交额大于 1.5 亿美元的过滤条件，展示当前 TOP15 数据、风险标签、活跃度与板块分布。</p>
+          <p class="subtitle">基于 24h 成交额大于 1500 万美元、剔除稳定币且仅保留 Binance 现货可交易标的的过滤条件，展示当前 TOP15 数据、特征、证据链、黑马候选、持续走强候选、交叉确认候选，以及交叉候选转弱后的反向做空研究。</p>
         </div>
         <div class="actions">
           <button id="refreshBtn">立即刷新</button>
@@ -29,7 +29,7 @@
         <article class="hero-card">
           <span>满足门槛币种数</span>
           <strong id="filteredCount">--</strong>
-          <small>24h 成交额 &gt; 1.5 亿美元</small>
+          <small>24h 成交额 &gt; 1500 万美元｜已剔除稳定币｜仅 Binance 现货</small>
         </article>
         <article class="hero-card">
           <span>榜单数量</span>
@@ -43,95 +43,363 @@
         </article>
       </section>
 
-      <section class="panel filters-panel">
-        <div class="panel-header">
-          <h2>筛选与视图</h2>
-          <p id="statusText">等待加载…</p>
+      <section class="panel workspace-switcher">
+        <div class="workspace-copy">
+          <p class="eyebrow workspace-kicker">Research Workspaces</p>
+          <h2>先聚焦做空末端，再回到全市场结构</h2>
+          <p>把空头研究和模拟开空单独拎成一个工作台。默认直接进入执行视角，TOP15 全景分析退到第二页。</p>
         </div>
-        <div class="filters">
-          <label>
-            <span>板块</span>
-            <select id="sectorFilter">
-              <option value="">全部</option>
-            </select>
-          </label>
-          <label>
-            <span>风险标签</span>
-            <select id="riskFilter">
-              <option value="">全部</option>
-            </select>
-          </label>
-          <label>
-            <span>活跃度</span>
-            <select id="activityFilter">
-              <option value="">全部</option>
-              <option value="VeryHigh">VeryHigh</option>
-              <option value="High">High</option>
-              <option value="Moderate">Moderate</option>
-              <option value="Low">Low</option>
-              <option value="Unknown">Unknown</option>
-            </select>
-          </label>
-          <label>
-            <span>快照</span>
-            <select id="snapshotFilter">
-              <option value="latest">最新</option>
-            </select>
-          </label>
-          <label class="search-box">
-            <span>搜索</span>
-            <input id="searchInput" type="text" placeholder="代码 / 名称 / 标签" />
-          </label>
+        <div class="workspace-tabs" role="tablist" aria-label="研究工作台切换">
+          <button id="workspaceShortTab" class="workspace-tab is-active" type="button" role="tab" aria-selected="true" data-tab-target="short">
+            <small>Default Workspace</small>
+            <strong>做空研究 / 模拟开空</strong>
+            <span id="workspaceShortMeta">等待快照加载…</span>
+          </button>
+          <button id="workspaceLiveTab" class="workspace-tab" type="button" role="tab" aria-selected="false" data-tab-target="live">
+            <small>Execution Desk</small>
+            <strong>币安测试网实盘</strong>
+            <span id="workspaceLiveMeta">等待测试网同步…</span>
+          </button>
+          <button id="workspaceOverviewTab" class="workspace-tab" type="button" role="tab" aria-selected="false" data-tab-target="overview">
+            <small>Market Atlas</small>
+            <strong>TOP15 全景总览</strong>
+            <span id="workspaceOverviewMeta">结构、路径与榜单总览</span>
+          </button>
         </div>
       </section>
 
-      <section class="stats-row" id="summaryCards"></section>
-
-      <section class="layout-grid">
-        <section class="panel">
+      <div class="workspace-pane" data-workspace-panel="overview">
+        <section class="panel filters-panel">
           <div class="panel-header">
-            <h2>TOP15 当前榜单</h2>
-            <p>支持筛选、搜索与本地刷新。</p>
+            <h2>筛选与视图</h2>
+            <p id="statusText">等待加载…</p>
           </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>币种</th>
-                  <th>板块</th>
-                  <th>市值带</th>
-                  <th>24h涨跌</th>
-                  <th>24h成交额</th>
-                  <th>活跃度</th>
-                  <th>风险</th>
-                </tr>
-              </thead>
-              <tbody id="tableBody"></tbody>
-            </table>
+          <div class="filters">
+            <label>
+              <span>板块</span>
+              <select id="sectorFilter">
+                <option value="">全部</option>
+              </select>
+            </label>
+            <label>
+              <span>风险标签</span>
+              <select id="riskFilter">
+                <option value="">全部</option>
+              </select>
+            </label>
+            <label>
+              <span>活跃度</span>
+              <select id="activityFilter">
+                <option value="">全部</option>
+                <option value="VeryHigh">VeryHigh</option>
+                <option value="High">High</option>
+                <option value="Moderate">Moderate</option>
+                <option value="Low">Low</option>
+                <option value="Unknown">Unknown</option>
+              </select>
+            </label>
+            <label>
+              <span>快照</span>
+              <select id="snapshotFilter">
+                <option value="latest">最新</option>
+              </select>
+            </label>
+            <label class="search-box">
+              <span>搜索</span>
+              <input id="searchInput" type="text" placeholder="代码 / 名称 / 标签" />
+            </label>
           </div>
         </section>
 
-        <aside class="side-stack">
+        <section class="stats-row" id="summaryCards"></section>
+
+        <section class="panel methodology-panel">
+          <div class="panel-header">
+            <h2>模型口径与计算方法</h2>
+            <div class="header-actions">
+              <p>数据、特征、结论三层分开展示，证据链可追溯。</p>
+              <button id="toggleAlgoBtn" class="ghost">查看算法详情</button>
+            </div>
+          </div>
+          <div id="algoMarkdownPanel" class="algo-markdown-panel hidden">
+            <pre id="algoMarkdownContent" class="algo-markdown"></pre>
+          </div>
+          <div class="method-grid" id="methodGrid">
+            <article class="method-card">
+              <h3>数据层</h3>
+              <ul>
+                <li>范围：24h 成交额 &gt; 1500 万美元，剔除稳定币</li>
+                <li>价格/成交额：CoinPaprika 主源，Binance 24h ticker 复核</li>
+                <li>K线：Binance 1h / 4h / 1d，最近 7 天，按 open_time_ms 增量去重</li>
+              </ul>
+            </article>
+            <article class="method-card">
+              <h3>特征层</h3>
+              <ul>
+                <li>结构特征：趋势、突破、7日涨幅、最大回撤、结构分数</li>
+                <li>黑马特征：动量、换手、活跃度、趋势共振、风险收益画像</li>
+                <li>持续走强特征：趋势一致性、回撤控制、承接质量、过热惩罚</li>
+              </ul>
+            </article>
+            <article class="method-card">
+              <h3>结论层</h3>
+              <ul>
+                <li>输出：黑马分数、前五潜力、持续走强等级、交叉确认等级</li>
+                <li>交叉确认层同时综合黑马、持续走强、在榜时长与在榜占比</li>
+                <li>页面明确展示“数据 → 特征 → 证据 → 结论”</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <section class="triple-board-grid">
+          <section class="panel board-panel board-panel-darkhorse">
+            <div class="panel-header">
+              <h2>黑马候选榜</h2>
+              <p>按黑马分数排序，优先看冲前五潜力、风险收益与结构共振。</p>
+            </div>
+            <div id="candidateList" class="candidate-list"></div>
+          </section>
+          <section class="panel board-panel board-panel-persistence">
+            <div class="panel-header">
+              <h2>持续走强候选榜</h2>
+              <p>按持续走强分排序，优先看趋势延续、回撤控制与承接质量。</p>
+            </div>
+            <div id="persistenceList" class="candidate-list"></div>
+          </section>
+          <section class="panel board-panel board-panel-overlap">
+            <div class="panel-header">
+              <h2>交叉确认候选榜</h2>
+              <p>正式候选仅展示已通过门槛的交叉确认币种，下方单独保留观察中列表。</p>
+            </div>
+            <div class="overlap-sections">
+              <div class="overlap-section">
+                <div class="section-mini-head">
+                  <h3>正式交叉候选</h3>
+                  <p>仅显示 overlap_candidate = true</p>
+                </div>
+                <div id="overlapConfirmedList" class="candidate-list"></div>
+              </div>
+              <div class="overlap-section overlap-watch-section">
+                <div class="section-mini-head">
+                  <h3>观察中</h3>
+                  <p>分数有潜力，但暂未通过最终交叉确认门槛</p>
+                </div>
+                <div id="overlapWatchList" class="candidate-list"></div>
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+
+      <div class="workspace-pane is-active" data-workspace-panel="short">
+        <section class="panel short-workspace-intro">
+          <div class="panel-header">
+            <div>
+              <h2>做空研究工作台</h2>
+              <p>只研究交叉候选成立后的动能衰减段，把“候选池”和“服务端自动模拟”收进同一页。</p>
+            </div>
+            <div class="header-actions">
+              <p>默认入口：末端转弱 > 结构止损 > 1R / 12h 管理</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel short-strategy-panel">
+        <div class="panel-header">
+          <h2>反向做空研究策略</h2>
+          <p>只做交叉候选成立后的转弱段，主策略改为结构止损，不再用固定百分比止损做主模板。</p>
+        </div>
+        <div id="shortResearchCards" class="short-strategy-grid"></div>
+        <div class="method-grid short-method-grid">
+              <article class="method-card">
+                <h3>主规则</h3>
+                <ul>
+                  <li>先等当前 overlap_candidate = true，或最近 2h 内曾进入 overlap_candidate 后再做，不在第一次冲榜时提前埋伏。</li>
+                  <li>基础转弱触发：trend_1h 转为 Range / Down / StrongDown，且 overlap_score_delta_30m &lt;= 0。</li>
+                  <li>标准开空还要额外满足 breakout_1h = NoBreakout，且 24h 涨幅位于 3% 到 8%。</li>
+                </ul>
+              </article>
+          <article class="method-card">
+            <h3>信号分层</h3>
+            <ul>
+              <li>观察：只满足交叉候选后的转弱，不满足过滤或结构止损窗口时只观察。</li>
+              <li>标准开空：满足主规则 + 结构止损可交易，允许做模拟开空。</li>
+              <li>高置信狙击：标准开空基础上，再叠加 OI 扩张、贴水加深等确认层。</li>
+            </ul>
+          </article>
+              <article class="method-card">
+                <h3>模拟开空</h3>
+                <ul>
+                  <li>默认单笔风险预算 5% 账户权益，默认总名义敞口上限 200%，结构止损 = 前高(2h) + 0.35 x ATR14(1h)。</li>
+                  <li>止盈固定 1R，最长持有 12 小时；结构止损必须落在 0.8% 到 4.5% 的窗口内。</li>
+                  <li>页面中的模拟仓位仅做研究与纸面跟踪，不连接交易所、不自动下单。</li>
+                </ul>
+              </article>
+        </div>
+      </section>
+
+      <section class="short-trading-grid">
+        <div class="short-main-stack">
+          <section class="panel board-panel board-panel-short">
+            <div class="panel-header">
+              <h2>当前空头候选池</h2>
+              <p>候选来自已进入交叉候选池、且 1h 动能开始走弱的币；只有进入“标准开空 / 高置信狙击”层才允许模拟开空。</p>
+            </div>
+            <div class="short-toolbar">
+              <label>
+                <span>执行模板</span>
+                <select id="shortProfileSelect"></select>
+              </label>
+              <div id="shortCandidateSummary" class="short-summary-chip">等待计算…</div>
+            </div>
+            <div id="shortCandidateList" class="candidate-list"></div>
+          </section>
+
+          <section class="panel auto-trader-panel">
+            <div class="panel-header">
+              <div>
+                <h2>服务端自动模拟交易</h2>
+                <p>采集器每轮完成后自动更新，页面只读展示服务器持仓、订单日志和权益曲线。</p>
+              </div>
+              <div class="header-actions">
+                <p id="autoTraderStatusText">等待服务器首个快照执行…</p>
+              </div>
+            </div>
+            <div id="autoTraderSummary" class="paper-summary-grid auto-summary-grid"></div>
+            <div id="autoTraderConfigSummary" class="candidate-list auto-meta-list"></div>
+            <div class="auto-readonly-grid">
+              <div>
+                <div class="section-mini-head">
+                  <h3>订单日志</h3>
+                  <p>最近的自动开平仓与当前持仓</p>
+                </div>
+                <div id="autoTraderOrderList" class="candidate-list"></div>
+              </div>
+              <div>
+                <div class="section-mini-head">
+                  <h3>权益曲线</h3>
+                  <p>按 5 分钟快照记录账户变化</p>
+                </div>
+                <div id="autoTraderCurveList" class="candidate-list"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+      </div>
+
+      <div class="workspace-pane" data-workspace-panel="live">
+        <section class="panel live-workspace-intro">
+          <div class="panel-header">
+            <div>
+              <h2>币安测试网执行席位</h2>
+              <p>这页只看测试网真实下单后的账户、持仓、保护单和事件日志。本金按 4941 USD 作为收益统计基线。</p>
+            </div>
+            <div class="header-actions">
+              <p id="liveTraderStatusText">等待测试网同步…</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel auto-trader-panel live-trader-panel">
+          <div class="panel-header">
+            <div>
+              <h2>测试网账户概览</h2>
+              <p>只读展示 `C_overheat_fade` 测试网执行结果，不在页面内发单。</p>
+            </div>
+          </div>
+          <div id="liveTraderSummary" class="paper-summary-grid auto-summary-grid"></div>
+          <div id="liveTraderMetaSummary" class="candidate-list auto-meta-list"></div>
+          <div class="auto-readonly-grid live-readonly-grid">
+            <div>
+              <div class="section-mini-head">
+                <h3>当前持仓</h3>
+                <p>真实持仓、保护单、未实现盈亏</p>
+              </div>
+              <div id="liveTraderPositions" class="candidate-list"></div>
+            </div>
+            <div>
+              <div class="section-mini-head">
+                <h3>订单 / 事件日志</h3>
+                <p>开平仓、保护单重建、失败与对账</p>
+              </div>
+              <div id="liveTraderEvents" class="candidate-list"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="workspace-pane" data-workspace-panel="overview">
+        <section class="analysis-grid">
           <section class="panel">
-            <div class="panel-header compact">
+            <div class="panel-header">
+              <h2>证据链总结</h2>
+              <p>展示关键数据、结构特征、持续走强判断、路径研究与交叉确认结果。</p>
+            </div>
+            <div id="evidenceList" class="evidence-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-header">
               <h2>前五强势币</h2>
+              <p>综合观察当前强势样本，便于快速复核。</p>
             </div>
             <div id="leaderList" class="leader-list"></div>
           </section>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>路径研究视图</h2>
+            <p>聚焦确认速度、确认前稳定性与当前路径分类，便于识别“快推进 / 快确认 / 高波动 / 待观察”样本。</p>
+          </div>
+          <div id="pathResearchList" class="candidate-list"></div>
+        </section>
+
+        <section class="layout-grid">
           <section class="panel">
-            <div class="panel-header compact">
-              <h2>使用说明</h2>
+            <div class="panel-header">
+              <h2>TOP15 当前榜单</h2>
+              <p>支持筛选、搜索与本地刷新。</p>
             </div>
-            <ul class="notes">
-              <li>该页面仅读取 8080 后端返回的数据。</li>
-              <li>筛选器只影响前端显示，不改动原始数据。</li>
-              <li>自动刷新默认 60 秒轮询一次。</li>
-              <li>当前为本地版，尚未接入现网。</li>
-            </ul>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>币种</th>
+                    <th>板块</th>
+                    <th>市值带</th>
+                    <th>24h涨跌</th>
+                    <th>24h成交额</th>
+                    <th>结构</th>
+                    <th>黑马结论</th>
+                    <th>持续走强</th>
+                    <th>交叉确认</th>
+                  </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+              </table>
+            </div>
           </section>
-        </aside>
-      </section>
+
+          <aside class="side-stack">
+            <section class="panel">
+              <div class="panel-header compact">
+                <h2>使用说明</h2>
+              </div>
+              <ul class="notes">
+                <li>该页面仅读取 8080 后端返回的数据。</li>
+                <li>快照时间优先显示北京时间（GMT+8）。</li>
+                <li>筛选器只影响前端显示，不改动原始数据。</li>
+                <li>自动刷新默认 60 秒轮询一次。</li>
+                <li>反向做空与模拟开空仅用于研究与纸面交易。</li>
+                <li>币种离开当前榜单后，页面无法继续自动盯市该仓位。</li>
+              </ul>
+            </section>
+          </aside>
+        </section>
+      </div>
     </div>
     <script src="./app.js"></script>
   </body>

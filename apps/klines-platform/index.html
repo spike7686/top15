@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>K线数据展示平台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Binance Kline Viewer</p>
+          <h1>K线数据展示平台</h1>
+          <p class="subtitle">固定展示区间：2024-01-01 00:00:00 UTC 至 2026-03-01 00:00:00 UTC（北京时间显示）。支持 BTCUSDT / ETHUSDT / SOLUSDT / BNBUSDT，时间级别 15m / 1h / 4h，前端分页浏览与 CSV 下载。</p>
+        </div>
+        <div class="hero-card">
+          <div class="metric"><span>展示区间</span><strong>20240101 - 20260301</strong></div>
+          <div class="metric"><span>模式</span><strong>只读展示</strong></div>
+          <div class="metric"><span>导出格式</span><strong>CSV / 北京时间</strong></div>
+        </div>
+      </header>
+
+      <main class="grid">
+        <section class="panel form-panel">
+          <h2>筛选条件</h2>
+          <form id="query-form">
+            <div class="field-grid fixed-three">
+              <label>
+                <span>币种</span>
+                <select id="symbol" name="symbol">
+                  <option value="BTCUSDT">BTCUSDT</option>
+                  <option value="ETHUSDT">ETHUSDT</option>
+                  <option value="SOLUSDT">SOLUSDT</option>
+                  <option value="BNBUSDT">BNBUSDT</option>
+                </select>
+              </label>
+              <label>
+                <span>时间级别</span>
+                <select id="interval" name="interval">
+                  <option value="15m">15m</option>
+                  <option value="1h">1h</option>
+                  <option value="4h">4h</option>
+                </select>
+              </label>
+              <label>
+                <span>每页行数</span>
+                <select id="page-size" name="page_size">
+                  <option value="50">50</option>
+                  <option value="100" selected>100</option>
+                  <option value="200">200</option>
+                  <option value="500">500</option>
+                </select>
+              </label>
+            </div>
+            <div class="range-box">
+              <div><span>固定开始时间</span><strong>2024-01-01 08:00:00 BJT</strong></div>
+              <div><span>固定结束时间</span><strong>2026-03-01 08:00:00 BJT</strong></div>
+            </div>
+            <div class="actions">
+              <button type="submit" id="view-btn">查看</button>
+              <button type="button" id="download-btn" class="secondary">下载当前筛选 CSV</button>
+            </div>
+          </form>
+          <div id="status" class="status muted">等待操作</div>
+        </section>
+
+        <section class="panel info-panel">
+          <h2>数据状态</h2>
+          <div id="cache-info" class="cache-list"></div>
+        </section>
+
+        <section class="panel table-panel">
+          <div class="panel-head">
+            <h2>查询结果</h2>
+            <div class="panel-head-actions">
+              <span id="result-count" class="badge">0 行</span>
+              <span id="page-indicator" class="badge">第 1 页</span>
+            </div>
+          </div>
+          <div class="pagination-bar">
+            <button type="button" id="prev-btn" class="secondary small">上一页</button>
+            <button type="button" id="next-btn" class="secondary small">下一页</button>
+          </div>
+          <div class="table-wrap">
+            <table id="result-table">
+              <thead>
+                <tr>
+                  <th>北京时间</th>
+                  <th>Open</th>
+                  <th>High</th>
+                  <th>Low</th>
+                  <th>Close</th>
+                  <th>Volume</th>
+                  <th>EMA5</th>
+                  <th>EMA21</th>
+                  <th>EMA144</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,171 @@
+{
+  "strategy_version": "post_confirm_weak_turn_v1",
+  "paper_trader_version": "server_paper_trader_v6_shadow_books_controls_live_launch",
+  "strategy": {
+    "signal_name": "post_confirm_weak_turn",
+    "display_name": "后确认转弱开空",
+    "anchor": {
+      "recent_overlap_field": "recent_overlap_candidate_2h",
+      "recent_overlap_window_hours": 2.0,
+      "min_top15_persistence_hours": 1.0
+    },
+    "weakening": {
+      "trend_1h_values": ["Range", "Down", "StrongDown"],
+      "overlap_score_delta_30m_max": 0.0,
+      "breakout_1h_required": "NoBreakout",
+      "change_24h_min_pct": 3.0,
+      "change_24h_max_pct": 8.0
+    },
+    "confirmations": {
+      "default": {
+        "basis_rate_delta_vs_mean_1h_max": 0.0,
+        "top_trader_position_lsr_change_1h_pct_max": 0.0
+      },
+      "historical_sniper": {
+        "oi_change_1h_pct_min_exclusive": 0.0,
+        "basis_rate_latest_max": -0.006,
+        "top_trader_account_lsr_latest_min": 1.18
+      },
+      "live_sniper": {
+        "oi_change_1h_pct_min_exclusive": 0.0,
+        "perp_premium_pct_vs_spot_max": -0.4
+      }
+    }
+  },
+  "structure": {
+    "profile_id": "structure_r1_h12",
+    "profile_label": "结构止损 1.0R / 12h",
+    "front_high_lookback_h": 2.0,
+    "vol_lookback_h": 1.0,
+    "atr_period": 14,
+    "stop_buffer_mult": 0.35,
+    "min_buffer_pct": 0.15,
+    "stop_window_min_pct": 0.8,
+    "stop_window_max_pct": 4.5,
+    "tp_r": 1.0,
+    "max_hold_hours": 12.0
+  },
+  "risk": {
+    "initial_equity_usd": 10000.0,
+    "risk_pct": 5.0,
+    "max_concurrent": 3,
+    "max_gross_pct": 200.0,
+    "leverage": 2.0,
+    "min_tier": "standard"
+  },
+  "research": {
+    "focus_signal_name": "post_confirm_weak_turn",
+    "focus_signal_definition": "Current overlap_candidate=true or recent 2h overlap_candidate=true, then trend_1h turns to Range/Down/StrongDown and overlap_score_delta_30m <= 0.",
+    "entry_filters": ["no_breakout_1h", "chg_3_8"],
+    "entry_filter_definitions": {
+      "no_breakout_1h": {
+        "field": "breakout_1h",
+        "operator": "==",
+        "value": "NoBreakout"
+      },
+      "chg_3_8": {
+        "field": "change_24h_pct",
+        "operator": "between",
+        "min": 3.0,
+        "max": 8.0
+      }
+    },
+    "execution_profiles": [
+      {
+        "name": "baseline_tp1_5_sl1_h12",
+        "signal": "post_confirm_weak_turn",
+        "filters": [],
+        "mode": "fixed_pct",
+        "tp_pct": 1.5,
+        "sl_pct": 1.0,
+        "max_h": 12.0
+      },
+      {
+        "name": "baseline_tp2_sl1_h12",
+        "signal": "post_confirm_weak_turn",
+        "filters": [],
+        "mode": "fixed_pct",
+        "tp_pct": 2.0,
+        "sl_pct": 1.0,
+        "max_h": 12.0
+      },
+      {
+        "name": "selective_tp1_5_sl1_h12",
+        "signal": "post_confirm_weak_turn",
+        "filters": ["no_breakout_1h", "chg_3_8"],
+        "mode": "fixed_pct",
+        "tp_pct": 1.5,
+        "sl_pct": 1.0,
+        "max_h": 12.0
+      },
+      {
+        "name": "selective_tp2_sl1_h12",
+        "signal": "post_confirm_weak_turn",
+        "filters": ["no_breakout_1h", "chg_3_8"],
+        "mode": "fixed_pct",
+        "tp_pct": 2.0,
+        "sl_pct": 1.0,
+        "max_h": 12.0
+      },
+      {
+        "name": "selective_structure_r1_h12",
+        "signal": "post_confirm_weak_turn",
+        "filters": ["no_breakout_1h", "chg_3_8"],
+        "mode": "structure_r",
+        "tp_r": 1.0,
+        "max_h": 12.0,
+        "risk_budget_pct": 5.0,
+        "min_stop_pct": 0.8,
+        "max_stop_pct": 4.5
+      },
+      {
+        "name": "selective_structure_r2_h12",
+        "signal": "post_confirm_weak_turn",
+        "filters": ["no_breakout_1h", "chg_3_8"],
+        "mode": "structure_r",
+        "tp_r": 2.0,
+        "max_h": 12.0,
+        "risk_budget_pct": 5.0,
+        "min_stop_pct": 0.8,
+        "max_stop_pct": 4.5
+      }
+    ]
+  },
+  "shadow_layers": {
+    "A_post_confirm_weak_turn": {
+      "code": "A",
+      "label": "A / 严格后确认转弱",
+      "signal_name": "post_confirm_weak_turn"
+    },
+    "B_no_breakout_fade": {
+      "code": "B",
+      "label": "B / NoBreakout Fade",
+      "signal_name": "no_breakout_fade"
+    },
+    "B_no_breakout_fade_wide": {
+      "code": "B+",
+      "label": "B+ / NoBreakout Wide",
+      "signal_name": "no_breakout_fade_wide"
+    },
+    "C_overheat_fade": {
+      "code": "C",
+      "label": "C / Overheat Fade",
+      "signal_name": "overheat_fade"
+    },
+    "C_overheat_fade_wide": {
+      "code": "C+",
+      "label": "C+ / Overheat Wide",
+      "signal_name": "overheat_fade_wide"
+    },
+    "D_extreme_overheat_fade": {
+      "code": "D",
+      "label": "D / Extreme Overheat Fade",
+      "signal_name": "extreme_overheat_fade"
+    },
+    "D_extreme_overheat_fade_wide": {
+      "code": "D+",
+      "label": "D+ / Extreme Wide",
+      "signal_name": "extreme_overheat_fade_wide"
+    }
+  }
+}
