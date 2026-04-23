@@ -136,7 +136,7 @@ def default_config():
             "set_symbol_leverage": True,
         },
         "strategy": {
-            "strategy_id": "C_overheat_fade",
+            "strategy_id": "C_overheat_fade_wide",
             "max_concurrent": int(RISK_CONFIG.get("max_concurrent") or 3),
             "exit_on_signal_loss": True,
             "recreate_protection_if_missing": True,
@@ -148,13 +148,16 @@ def default_config():
             "use_exchange_margin_balance": True,
             "fallback_equity_usd": float(RISK_CONFIG.get("initial_equity_usd") or 10000.0),
             "risk_pct": float(RISK_CONFIG.get("risk_pct") or 5.0),
-            "max_gross_pct": float(RISK_CONFIG.get("max_gross_pct") or 200.0),
-            "leverage": float(RISK_CONFIG.get("leverage") or 2.0),
+            "max_gross_pct": 500.0,
+            "leverage": 5.0,
+            "margin_buffer_pct": 95.0,
             "min_notional_usd": 20.0,
         },
         "execution": {
             "validate_entry_with_test_order": True,
             "cancel_all_symbol_algo_orders_on_exit": True,
+            "entry_retry_shrink_pct": 97.0,
+            "max_entry_retries": 6,
         },
         "reporting": {
             "starting_capital_usd": 4941.0,
@@ -329,6 +332,20 @@ def round_qty_down(quantity, symbol_info):
     return float(qty) if qty > 0 else 0.0
 
 
+def shrink_qty_down(quantity, symbol_info, shrink_pct):
+    quantity = safe_float(quantity) or 0.0
+    shrink_pct = safe_float(shrink_pct) or 100.0
+    if quantity <= 0:
+        return 0.0
+    next_qty = round_qty_down(quantity * shrink_pct / 100.0, symbol_info)
+    if 0 < next_qty < quantity:
+        return next_qty
+    step = safe_float(market_step_size(symbol_info)) or 0.0
+    if step > 0 and quantity > step:
+        return round_qty_down(quantity - step, symbol_info)
+    return 0.0
+
+
 def round_price_up(price, symbol_info):
     tick = price_tick_size(symbol_info)
     return float(decimal_ceil(price, tick))
@@ -402,9 +419,11 @@ def compute_entry_plan(config, metrics, signal, symbol_info):
     market_price = safe_float(signal.get("perp_last_price")) or safe_float(signal.get("current_price"))
     leverage = safe_float(config["risk"].get("leverage")) or 1.0
     risk_pct = safe_float(config["risk"].get("risk_pct")) or 0.0
+    margin_buffer_pct = safe_float(config["risk"].get("margin_buffer_pct")) or 100.0
     risk_usd = metrics["equity_usd"] * risk_pct / 100.0
     risk_sized_notional = risk_usd / (stop_pct / 100.0) if stop_pct not in (None, 0) else 0.0
-    margin_cap_notional = metrics["available_balance_usd"] * leverage
+    margin_cap_notional_raw = metrics["available_balance_usd"] * leverage
+    margin_cap_notional = margin_cap_notional_raw * margin_buffer_pct / 100.0
     size_usd = min(risk_sized_notional, metrics["remaining_gross_usd"], margin_cap_notional)
     raw_qty = (size_usd / market_price) if market_price not in (None, 0) else 0.0
     qty = round_qty_down(raw_qty, symbol_info)
@@ -422,6 +441,8 @@ def compute_entry_plan(config, metrics, signal, symbol_info):
         ),
         "risk_usd": risk_usd,
         "risk_sized_notional_usd": risk_sized_notional,
+        "margin_cap_notional_usd": margin_cap_notional,
+        "margin_cap_notional_raw_usd": margin_cap_notional_raw,
         "size_usd": size_usd,
         "quantity": qty,
         "notional_usd": notional_usd,
@@ -478,6 +499,11 @@ def candidate_preview(candidates, limit):
             }
         )
     return out
+
+
+def is_margin_insufficient_error(exc):
+    text = repr(exc)
+    return "-2019" in text or "Margin is insufficient" in text
 
 
 def refresh_signal_for_runtime(signal):
@@ -933,6 +959,8 @@ def open_new_trades(
     failed = []
     active_symbols = set(state["active_trades"])
     leverage = safe_float(config["risk"].get("leverage")) or 1.0
+    retry_shrink_pct = safe_float(config["execution"].get("entry_retry_shrink_pct")) or 97.0
+    max_entry_retries = max(1, int(safe_float(config["execution"].get("max_entry_retries")) or 6))
     remaining_slots = max(0, int(config["strategy"].get("max_concurrent") or 0) - metrics["open_count"])
     remaining_gross = metrics["remaining_gross_usd"]
     for signal in candidates:
@@ -959,14 +987,51 @@ def open_new_trades(
         try:
             if config["binance"].get("set_symbol_leverage", True):
                 client.change_leverage(symbol, leverage)
-            if config["execution"].get("validate_entry_with_test_order", True):
-                client.test_market_order(symbol, "SELL", plan["quantity"])
-            entry_resp = client.market_entry_short(
-                symbol,
-                plan["quantity"],
-                entry_client_id(symbol),
-            )
-            executed_qty = safe_float(entry_resp.get("executedQty")) or safe_float(entry_resp.get("origQty")) or plan["quantity"]
+            current_qty = plan["quantity"]
+            current_notional_usd = plan["notional_usd"]
+            entry_resp = None
+            last_margin_error = None
+            for attempt in range(max_entry_retries):
+                try:
+                    if config["execution"].get("validate_entry_with_test_order", True):
+                        client.test_market_order(symbol, "SELL", current_qty)
+                    entry_resp = client.market_entry_short(
+                        symbol,
+                        current_qty,
+                        entry_client_id(symbol),
+                    )
+                    break
+                except Exception as exc:
+                    if not is_margin_insufficient_error(exc):
+                        raise
+                    last_margin_error = repr(exc)
+                    next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
+                    next_notional_usd = next_qty * plan["market_price"]
+                    if (
+                        attempt >= max_entry_retries - 1
+                        or next_qty <= 0
+                        or next_qty < plan["min_qty"]
+                        or next_notional_usd < plan["min_notional_usd"]
+                    ):
+                        raise
+                    create_journal_event(
+                        "trade_entry_retry_shrunk",
+                        {
+                            "symbol": symbol,
+                            "snapshot_id": snapshot_id,
+                            "attempt": attempt + 1,
+                            "error": last_margin_error,
+                            "old_qty": current_qty,
+                            "new_qty": next_qty,
+                            "old_notional_usd": current_notional_usd,
+                            "new_notional_usd": next_notional_usd,
+                        },
+                    )
+                    current_qty = next_qty
+                    current_notional_usd = next_notional_usd
+            if not entry_resp:
+                raise RuntimeError(last_margin_error or f"{symbol} 未能生成有效入场回报")
+            executed_qty = safe_float(entry_resp.get("executedQty")) or safe_float(entry_resp.get("origQty")) or current_qty
             entry_price = safe_float(entry_resp.get("avgPrice")) or plan["market_price"]
             stop_price = round_price_up(signal["structure_stop_price"], symbol_info)
             risk_abs = stop_price - entry_price if entry_price is not None else None
