@@ -506,23 +506,32 @@ def is_margin_insufficient_error(exc):
     return "-2019" in text or "Margin is insufficient" in text
 
 
+def resolve_signal_stop_window(signal):
+    signal = signal if isinstance(signal, dict) else {}
+    min_pct = safe_float(signal.get("stop_window_min_pct"))
+    max_pct = safe_float(signal.get("stop_window_max_pct"))
+    if min_pct is None:
+        min_pct = short_strategy_module.STRUCTURE_STOP_MIN_PCT
+    if max_pct is None:
+        max_pct = short_strategy_module.STRUCTURE_STOP_MAX_PCT
+    return min_pct, max_pct
+
+
 def refresh_signal_for_runtime(signal):
     signal = dict(signal or {})
     stop_pct = safe_float(signal.get("structure_stop_pct"))
     triggered = bool(signal.get("triggered"))
     prev_stop_tradable = bool(signal.get("stop_tradable"))
-    stop_tradable = (
-        stop_pct is not None
-        and short_strategy_module.STRUCTURE_STOP_MIN_PCT <= stop_pct <= short_strategy_module.STRUCTURE_STOP_MAX_PCT
-    )
+    stop_window_min_pct, stop_window_max_pct = resolve_signal_stop_window(signal)
+    stop_tradable = stop_pct is not None and stop_window_min_pct <= stop_pct <= stop_window_max_pct
     blockers = [item for item in (signal.get("blockers") or []) if not str(item).startswith("结构止损")]
     if triggered and stop_pct is None:
         if "缺少结构止损上下文" not in blockers:
             blockers.append("缺少结构止损上下文")
     elif triggered and stop_pct is not None and not stop_tradable:
-        blockers.append(
-            f"结构止损{stop_pct:.2f}%不在{short_strategy_module.STRUCTURE_STOP_MIN_PCT:.1f}%~{short_strategy_module.STRUCTURE_STOP_MAX_PCT:.1f}%"
-        )
+        blockers.append(f"结构止损{stop_pct:.2f}%不在{stop_window_min_pct:.1f}%~{stop_window_max_pct:.1f}%")
+    signal["stop_window_min_pct"] = stop_window_min_pct
+    signal["stop_window_max_pct"] = stop_window_max_pct
     signal["stop_tradable"] = stop_tradable
     signal["openable"] = triggered and stop_tradable
     if signal.get("quality_score") is not None and prev_stop_tradable != stop_tradable:
@@ -640,6 +649,12 @@ def build_live_trader_payload(config, state, snapshot_id, runtime, summary):
             "failed": summary.get("failed") or [],
         },
     }
+
+
+def resolve_runtime_stop_window(signal_map):
+    for signal in (signal_map or {}).values():
+        return resolve_signal_stop_window(signal)
+    return short_strategy_module.STRUCTURE_STOP_MIN_PCT, short_strategy_module.STRUCTURE_STOP_MAX_PCT
 
 
 class FatalTradeOpenError(RuntimeError):
@@ -1191,6 +1206,7 @@ def main():
         manifest, rows = load_latest_snapshot()
         snapshot_id = manifest.get("latest_snapshot_id")
         candidates, signal_map = build_candidate_records(config, rows)
+        runtime_stop_window_min_pct, runtime_stop_window_max_pct = resolve_runtime_stop_window(signal_map)
 
         summary = {
             "ok": True,
@@ -1205,8 +1221,8 @@ def main():
             "config_runtime": {
                 "allow_symbols": list(config["strategy"].get("allow_symbols") or []),
                 "max_concurrent": int(config["strategy"].get("max_concurrent") or 0),
-                "structure_stop_window_min_pct": short_strategy_module.STRUCTURE_STOP_MIN_PCT,
-                "structure_stop_window_max_pct": short_strategy_module.STRUCTURE_STOP_MAX_PCT,
+                "structure_stop_window_min_pct": runtime_stop_window_min_pct,
+                "structure_stop_window_max_pct": runtime_stop_window_max_pct,
                 "reprocess_snapshot": bool(args.reprocess_snapshot),
             },
             "warnings": [],

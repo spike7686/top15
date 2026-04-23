@@ -1245,6 +1245,9 @@ def build_shadow_layer_profiles():
     risk_budget_pct = safe_float(RISK_CONFIG.get("risk_pct"))
     profiles = OrderedDict()
     for strategy_id, layer in SHADOW_STRATEGY_LAYERS.items():
+        layer_tp_r = safe_float(layer.get("target_r_multiple"))
+        layer_stop_min_pct = safe_float(layer.get("stop_window_min_pct"))
+        layer_stop_max_pct = safe_float(layer.get("stop_window_max_pct"))
         profiles[strategy_id] = {
             "strategy_id": strategy_id,
             "code": layer.get("code"),
@@ -1252,11 +1255,11 @@ def build_shadow_layer_profiles():
             "signal": layer.get("signal_name"),
             "filters": list(layer.get("entry_filters") or []),
             "mode": "structure_r",
-            "tp_r": structure_tp_r if structure_tp_r is not None else 1.0,
+            "tp_r": layer_tp_r if layer_tp_r is not None else (structure_tp_r if structure_tp_r is not None else 1.0),
             "max_h": max_hold_hours if max_hold_hours is not None else 12.0,
             "risk_budget_pct": risk_budget_pct if risk_budget_pct is not None else 5.0,
-            "min_stop_pct": STRUCTURE_STOP_MIN_PCT,
-            "max_stop_pct": STRUCTURE_STOP_MAX_PCT,
+            "min_stop_pct": layer_stop_min_pct if layer_stop_min_pct is not None else STRUCTURE_STOP_MIN_PCT,
+            "max_stop_pct": layer_stop_max_pct if layer_stop_max_pct is not None else STRUCTURE_STOP_MAX_PCT,
             "description": layer.get("description"),
         }
     return profiles

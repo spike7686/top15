@@ -1115,11 +1115,9 @@ function buildShortSignal(row) {
   const structureTargetPrice = toNum(row.structure_target_price_r1);
   const frontHighPrice = toNum(row.structure_front_high_price);
   const atr1hPct = toNum(row.structure_atr_1h_pct);
-  const stopWindowMinPct = toNum(row.structure_stop_window_min_pct) ?? profile.stopWindowMinPct;
-  const stopWindowMaxPct = toNum(row.structure_stop_window_max_pct) ?? profile.stopWindowMaxPct;
-  const stopTradable = hasShortField(row.structure_stop_tradable)
-    ? toBool(row.structure_stop_tradable)
-    : (structureStopPct !== null && structureStopPct >= stopWindowMinPct && structureStopPct <= stopWindowMaxPct);
+  const stopWindowMinPct = profile.stopWindowMinPct ?? toNum(row.structure_stop_window_min_pct);
+  const stopWindowMaxPct = profile.stopWindowMaxPct ?? toNum(row.structure_stop_window_max_pct);
+  const stopTradable = structureStopPct !== null && structureStopPct >= stopWindowMinPct && structureStopPct <= stopWindowMaxPct;
 
   const oiChange1hPct = toNum(row.oi_change_1h_pct);
   const oiExpanding = oiChange1hPct !== null && oiChange1hPct > (toNum(historicalSniper.oi_change_1h_pct_min_exclusive) ?? 0);
