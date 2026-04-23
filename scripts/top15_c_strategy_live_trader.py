@@ -314,6 +314,13 @@ def min_market_qty(symbol_info):
     return safe_float(market_lot.get("minQty")) or safe_float(lot.get("minQty")) or 0.0
 
 
+def max_market_qty(symbol_info):
+    filters = build_filter_map(symbol_info)
+    market_lot = filters.get("MARKET_LOT_SIZE") or {}
+    lot = filters.get("LOT_SIZE") or {}
+    return safe_float(market_lot.get("maxQty")) or safe_float(lot.get("maxQty")) or 0.0
+
+
 def price_tick_size(symbol_info):
     filters = build_filter_map(symbol_info)
     price_filter = filters.get("PRICE_FILTER") or {}
@@ -427,6 +434,9 @@ def compute_entry_plan(config, metrics, signal, symbol_info):
     size_usd = min(risk_sized_notional, metrics["remaining_gross_usd"], margin_cap_notional)
     raw_qty = (size_usd / market_price) if market_price not in (None, 0) else 0.0
     qty = round_qty_down(raw_qty, symbol_info)
+    max_qty = max_market_qty(symbol_info)
+    if max_qty and qty > max_qty:
+        qty = round_qty_down(max_qty, symbol_info)
     notional_usd = qty * market_price
     min_qty = min_market_qty(symbol_info)
     symbol_min_notional = min_notional(symbol_info)
@@ -448,6 +458,7 @@ def compute_entry_plan(config, metrics, signal, symbol_info):
         "notional_usd": notional_usd,
         "market_price": market_price,
         "min_qty": min_qty,
+        "max_qty": max_qty,
         "min_notional_usd": min_notional_usd,
         "margin_usd": (notional_usd / leverage) if leverage else notional_usd,
     }
@@ -504,6 +515,11 @@ def candidate_preview(candidates, limit):
 def is_margin_insufficient_error(exc):
     text = repr(exc)
     return "-2019" in text or "Margin is insufficient" in text
+
+
+def is_max_quantity_error(exc):
+    text = repr(exc)
+    return "-4005" in text or "Quantity greater than max quantity" in text
 
 
 def resolve_signal_stop_window(signal):
@@ -1017,15 +1033,21 @@ def open_new_trades(
                     )
                     break
                 except Exception as exc:
-                    if not is_margin_insufficient_error(exc):
+                    if not (is_margin_insufficient_error(exc) or is_max_quantity_error(exc)):
                         raise
                     last_margin_error = repr(exc)
-                    next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
+                    if is_max_quantity_error(exc):
+                        next_qty = round_qty_down(max_market_qty(symbol_info), symbol_info)
+                        if next_qty >= current_qty:
+                            next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
+                    else:
+                        next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
                     next_notional_usd = next_qty * plan["market_price"]
                     if (
                         attempt >= max_entry_retries - 1
                         or next_qty <= 0
                         or next_qty < plan["min_qty"]
+                        or (plan.get("max_qty") and next_qty > plan["max_qty"])
                         or next_notional_usd < plan["min_notional_usd"]
                     ):
                         raise
