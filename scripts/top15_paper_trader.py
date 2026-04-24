@@ -4,6 +4,8 @@ import json
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 from top15_short_strategy import (
     RECENT_OVERLAP_WINDOW_H,
@@ -25,6 +27,10 @@ LATEST_PATH = PAPER_TRADER_DIR / "latest.json"
 ORDERS_CSV_PATH = PAPER_TRADER_DIR / "orders.csv"
 EQUITY_CURVE_CSV_PATH = PAPER_TRADER_DIR / "equity_curve.csv"
 EVENTS_JSONL_PATH = PAPER_TRADER_DIR / "events.jsonl"
+HISTORY_CSV_PATH = DATA_DIR / "history.csv"
+
+BINANCE_SPOT_TICKER_URL = "https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+BINANCE_FUTURES_TICKER_URL = "https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}"
 
 PAPER_TRADER_CONFIG = {
     "version": "server_paper_trader_v6_shadow_books_controls_live_launch",
@@ -41,7 +47,7 @@ PAPER_TRADER_CONFIG = {
 
 RECENT_CLOSED_LIMIT = 24
 RECENT_EVENT_LIMIT = 60
-RECENT_CURVE_LIMIT = 48
+RECENT_CURVE_LIMIT = 144
 
 ORDER_LOG_FIELDS = [
     "strategy_id",
@@ -210,6 +216,7 @@ def default_state():
         "last_processed_at": None,
         "last_curve_snapshot_id": None,
         "recent_equity_curve": [],
+        "watch_pool_rows": {},
         "strategy_books": OrderedDict((strategy_id, default_book_state(strategy_id)) for strategy_id in STRATEGY_BOOK_CONFIGS),
     }
 
@@ -273,6 +280,11 @@ def load_state():
     state["last_processed_at"] = raw.get("last_processed_at")
     state["last_curve_snapshot_id"] = raw.get("last_curve_snapshot_id")
     state["recent_equity_curve"] = [dict(item) for item in raw.get("recent_equity_curve") or []][:RECENT_CURVE_LIMIT]
+    state["watch_pool_rows"] = {
+        str(symbol): dict(row)
+        for symbol, row in (raw.get("watch_pool_rows") or {}).items()
+        if symbol and isinstance(row, dict)
+    }
 
     raw_books = raw.get("strategy_books")
     legacy_book = None if isinstance(raw_books, dict) else extract_legacy_book(raw)
@@ -316,20 +328,82 @@ def compute_book_metrics(book):
         "win_count": int(book.get("win_count") or 0),
         "loss_count": int(book.get("loss_count") or 0),
         "total_realized_r": safe_float(book.get("total_realized_r")) or 0,
+        "total_order_count": len(open_orders) + int(book.get("total_closed_orders") or 0),
     }
 
 
-def build_book_summary(book):
+def load_curve_stats():
+    stats = {}
+    if not EQUITY_CURVE_CSV_PATH.exists():
+        return stats
+
+    with EQUITY_CURVE_CSV_PATH.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            strategy_id = row.get("strategy_id")
+            equity_usd = safe_float(row.get("equity_usd"))
+            if not strategy_id or equity_usd is None:
+                continue
+
+            item = stats.setdefault(
+                strategy_id,
+                {
+                    "equity_peak_usd": None,
+                    "max_drawdown_usd": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "last_equity_usd": None,
+                    "equity_change_last_snapshot_usd": 0.0,
+                    "equity_change_last_snapshot_pct": 0.0,
+                    "curve_point_count": 0,
+                },
+            )
+
+            peak = item["equity_peak_usd"]
+            if peak is None or equity_usd > peak:
+                peak = equity_usd
+            item["equity_peak_usd"] = peak
+
+            drawdown_usd = max(0.0, peak - equity_usd)
+            drawdown_pct = (drawdown_usd / peak * 100.0) if peak else 0.0
+            item["max_drawdown_usd"] = max(item["max_drawdown_usd"], drawdown_usd)
+            item["max_drawdown_pct"] = max(item["max_drawdown_pct"], drawdown_pct)
+
+            prev_equity = item["last_equity_usd"]
+            if prev_equity not in (None, 0):
+                item["equity_change_last_snapshot_usd"] = equity_usd - prev_equity
+                item["equity_change_last_snapshot_pct"] = (equity_usd - prev_equity) / prev_equity * 100.0
+            elif prev_equity == 0:
+                item["equity_change_last_snapshot_usd"] = equity_usd
+                item["equity_change_last_snapshot_pct"] = None
+            else:
+                item["equity_change_last_snapshot_usd"] = 0.0
+                item["equity_change_last_snapshot_pct"] = 0.0
+
+            item["last_equity_usd"] = equity_usd
+            item["curve_point_count"] += 1
+
+    return stats
+
+
+def build_book_summary(book, curve_stats_by_strategy=None):
     metrics = compute_book_metrics(book)
+    curve_stats = (curve_stats_by_strategy or {}).get(book.get("strategy_id")) or {}
     metrics["starting_equity_usd"] = safe_float(book.get("starting_equity_usd")) or 0
     metrics["win_rate"] = metrics["win_count"] / metrics["closed_count"] if metrics["closed_count"] else None
+    metrics["equity_peak_usd"] = safe_float(curve_stats.get("equity_peak_usd"))
+    metrics["max_drawdown_usd"] = safe_float(curve_stats.get("max_drawdown_usd")) or 0.0
+    metrics["max_drawdown_pct"] = safe_float(curve_stats.get("max_drawdown_pct")) or 0.0
+    metrics["equity_change_last_snapshot_usd"] = safe_float(curve_stats.get("equity_change_last_snapshot_usd")) or 0.0
+    metrics["equity_change_last_snapshot_pct"] = safe_float(curve_stats.get("equity_change_last_snapshot_pct"))
+    metrics["curve_point_count"] = int(curve_stats.get("curve_point_count") or 0)
     return metrics
 
 
-def compute_aggregate_summary(strategy_books):
-    summaries = [build_book_summary(book) for book in strategy_books.values()]
+def compute_aggregate_summary(strategy_books, curve_stats_by_strategy=None):
+    summaries = [build_book_summary(book, curve_stats_by_strategy) for book in strategy_books.values()]
     closed_count = sum(summary["closed_count"] for summary in summaries)
     win_count = sum(summary["win_count"] for summary in summaries)
+    curve_stats = (curve_stats_by_strategy or {}).get("aggregate") or {}
     return {
         "starting_equity_usd": sum(summary["starting_equity_usd"] for summary in summaries),
         "equity_usd": sum(summary["equity_usd"] for summary in summaries),
@@ -342,7 +416,14 @@ def compute_aggregate_summary(strategy_books):
         "win_count": win_count,
         "loss_count": sum(summary["loss_count"] for summary in summaries),
         "total_realized_r": sum(summary["total_realized_r"] for summary in summaries),
+        "total_order_count": sum(summary["total_order_count"] for summary in summaries),
         "win_rate": (win_count / closed_count) if closed_count else None,
+        "equity_peak_usd": safe_float(curve_stats.get("equity_peak_usd")),
+        "max_drawdown_usd": safe_float(curve_stats.get("max_drawdown_usd")) or 0.0,
+        "max_drawdown_pct": safe_float(curve_stats.get("max_drawdown_pct")) or 0.0,
+        "equity_change_last_snapshot_usd": safe_float(curve_stats.get("equity_change_last_snapshot_usd")) or 0.0,
+        "equity_change_last_snapshot_pct": safe_float(curve_stats.get("equity_change_last_snapshot_pct")),
+        "curve_point_count": int(curve_stats.get("curve_point_count") or 0),
         "strategy_book_count": len(strategy_books),
     }
 
@@ -372,6 +453,130 @@ def calc_short_pnl_pct(entry_price, exit_price):
     if entry in (None, 0) or exit is None:
         return None
     return ((entry - exit) / entry) * 100
+
+
+def fetch_json(url):
+    try:
+        with urlopen(url, timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def load_latest_history_rows(symbols):
+    wanted = {str(symbol).upper() for symbol in symbols if symbol}
+    if not wanted or not HISTORY_CSV_PATH.exists():
+        return {}
+
+    latest_rows = {}
+    with HISTORY_CSV_PATH.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            symbol = str(row.get("symbol") or "").upper()
+            if symbol in wanted:
+                latest_rows[symbol] = dict(row)
+    return latest_rows
+
+
+def apply_spot_ticker_to_row(row, ticker):
+    if not isinstance(ticker, dict) or ticker.get("symbol") != row.get("binance_pair"):
+        return
+    row["binance_status"] = "matched"
+    last_price = safe_float(ticker.get("lastPrice"))
+    change_pct = safe_float(ticker.get("priceChangePercent"))
+    quote_volume = safe_float(ticker.get("quoteVolume"))
+    trade_count = ticker.get("count")
+    if last_price is not None:
+        row["binance_last_price"] = last_price
+    if change_pct is not None:
+        row["binance_change_24h_pct"] = change_pct
+    if quote_volume is not None:
+        row["binance_quote_volume_usd"] = quote_volume
+    if trade_count is not None:
+        row["binance_trade_count_24h"] = trade_count
+
+
+def apply_futures_ticker_to_row(row, ticker):
+    if not isinstance(ticker, dict) or ticker.get("symbol") != row.get("binance_perp_symbol"):
+        return
+    row["binance_perp_status"] = "matched"
+    last_price = safe_float(ticker.get("lastPrice"))
+    change_pct = safe_float(ticker.get("priceChangePercent"))
+    quote_volume = safe_float(ticker.get("quoteVolume"))
+    trade_count = ticker.get("count")
+    if last_price is not None:
+        row["perp_last_price"] = last_price
+    if change_pct is not None:
+        row["perp_change_24h_pct"] = change_pct
+    if quote_volume is not None:
+        row["perp_quote_volume_24h"] = quote_volume
+    if trade_count is not None:
+        row["perp_trade_count_24h"] = trade_count
+
+
+def refresh_watch_row_market(row):
+    row = dict(row or {})
+    spot_pair = row.get("binance_pair")
+    perp_symbol = row.get("binance_perp_symbol")
+    if spot_pair:
+        apply_spot_ticker_to_row(row, fetch_json(BINANCE_SPOT_TICKER_URL.format(symbol=spot_pair)))
+    if perp_symbol:
+        apply_futures_ticker_to_row(row, fetch_json(BINANCE_FUTURES_TICKER_URL.format(symbol=perp_symbol)))
+    return row
+
+
+def collect_open_symbols(strategy_books):
+    symbols = set()
+    for book in (strategy_books or {}).values():
+        for order in book.get("open_orders") or []:
+            symbol = str(order.get("symbol") or "").upper()
+            if symbol:
+                symbols.add(symbol)
+    return symbols
+
+
+def build_watch_pool_rows(state, rows_by_symbol, snapshot_id, captured_at_utc, captured_at_cst):
+    open_symbols = collect_open_symbols(state.get("strategy_books") or {})
+    if not open_symbols:
+        return {}
+
+    cached_rows = {
+        str(symbol).upper(): dict(row)
+        for symbol, row in (state.get("watch_pool_rows") or {}).items()
+        if symbol and isinstance(row, dict)
+    }
+    missing_symbols = sorted(symbol for symbol in open_symbols if symbol not in rows_by_symbol)
+    if not missing_symbols:
+        return {}
+
+    history_rows = load_latest_history_rows(missing_symbols)
+    watch_rows = {}
+    for symbol in missing_symbols:
+        seed = cached_rows.get(symbol) or history_rows.get(symbol)
+        if not seed:
+            continue
+        row = refresh_watch_row_market(seed)
+        row["symbol"] = symbol
+        row["snapshot_id"] = snapshot_id
+        row["captured_at_utc"] = captured_at_utc
+        row["captured_at_cst"] = captured_at_cst
+        row["paper_trader_watch_only"] = True
+        watch_rows[symbol] = row
+    return watch_rows
+
+
+def refresh_watch_pool_cache(state, rows_by_symbol):
+    next_watch_rows = {}
+    open_symbols = collect_open_symbols(state.get("strategy_books") or {})
+    for symbol in sorted(open_symbols):
+        row = rows_by_symbol.get(symbol)
+        if isinstance(row, dict):
+            next_watch_rows[symbol] = dict(row)
+    state["watch_pool_rows"] = next_watch_rows
+
+
+def strategy_uses_holdable_exit(strategy_id):
+    return str(strategy_id or "").endswith("_wide_hold")
 
 
 def sort_overlap_score(signal):
@@ -445,18 +650,28 @@ def evaluate_exit(order, row, layer_signal, mark_price, age_hours):
             "detail": "币种已离开当前 TOP15 快照视野，按上一标记价结束自动单。",
             "exit_price": safe_float(order.get("last_mark_price")) or safe_float(order.get("entry_price")),
         }
-    if mark_price is None or not layer_signal:
+    if mark_price is None:
         return None
-    if not layer_signal.get("anchor_active"):
-        if order.get("strategy_id") == "A_post_confirm_weak_turn":
-            detail = f"最近 {RECENT_OVERLAP_WINDOW_H:g}h 的确认锚点已失效，结束自动单。"
+    if layer_signal:
+        if layer_signal.get("use_holdable_exit"):
+            if not layer_signal.get("holdable", True):
+                detail = "；".join(layer_signal.get("hold_blockers") or []) or "持仓条件失效，结束自动单。"
+                return {
+                    "code": layer_signal.get("hold_exit_code") or "hold_lost",
+                    "detail": detail,
+                    "exit_price": mark_price,
+                }
         else:
-            detail = "该层要求的交叉候选状态已失效，结束自动单。"
-        return {"code": "anchor_lost", "detail": detail, "exit_price": mark_price}
-    if not layer_signal.get("weakness_active"):
-        return {"code": "weakness_rebound", "detail": "触发该层的转弱条件已失效，结束自动单。", "exit_price": mark_price}
-    if layer_signal.get("requires_no_breakout_exit") and not layer_signal.get("breakout_guard"):
-        return {"code": "breakout_resume", "detail": "1h 再次出现突破结构，结束自动单。", "exit_price": mark_price}
+            if not layer_signal.get("anchor_active"):
+                if order.get("strategy_id") == "A_post_confirm_weak_turn":
+                    detail = f"最近 {RECENT_OVERLAP_WINDOW_H:g}h 的确认锚点已失效，结束自动单。"
+                else:
+                    detail = "该层要求的交叉候选状态已失效，结束自动单。"
+                return {"code": "anchor_lost", "detail": detail, "exit_price": mark_price}
+            if not layer_signal.get("weakness_active"):
+                return {"code": "weakness_rebound", "detail": "触发该层的转弱条件已失效，结束自动单。", "exit_price": mark_price}
+            if layer_signal.get("requires_no_breakout_exit") and not layer_signal.get("breakout_guard"):
+                return {"code": "breakout_resume", "detail": "1h 再次出现突破结构，结束自动单。", "exit_price": mark_price}
     if age_hours >= (safe_float(order.get("max_hold_hours")) or 0):
         return {
             "code": "timeout",
@@ -487,7 +702,7 @@ def combine_recent_events(strategy_books):
     return sorted(out, key=lambda event: event.get("created_at") or "", reverse=True)[:RECENT_EVENT_LIMIT]
 
 
-def build_strategy_books_payload(strategy_books):
+def build_strategy_books_payload(strategy_books, curve_stats_by_strategy=None):
     payload = OrderedDict()
     for strategy_id, book in strategy_books.items():
         payload[strategy_id] = {
@@ -499,7 +714,7 @@ def build_strategy_books_payload(strategy_books):
             "entry_armed_snapshot_id": book.get("entry_armed_snapshot_id"),
             "entry_armed_at": book.get("entry_armed_at"),
             "config": dict(book.get("config") or {}),
-            "summary": build_book_summary(book),
+            "summary": build_book_summary(book, curve_stats_by_strategy),
             "open_orders": list(book.get("open_orders") or []),
             "recent_closed_orders": list(book.get("recent_closed_orders") or []),
             "recent_events": list(book.get("recent_events") or []),
@@ -510,18 +725,19 @@ def build_strategy_books_payload(strategy_books):
 
 def write_latest_payload(state):
     strategy_books = state.get("strategy_books") or {}
+    curve_stats_by_strategy = load_curve_stats()
     payload = {
         "ok": True,
         "version": state.get("version"),
         "config": state.get("config"),
         "last_processed_snapshot_id": state.get("last_processed_snapshot_id"),
         "last_processed_at": state.get("last_processed_at"),
-        "summary": compute_aggregate_summary(strategy_books),
+        "summary": compute_aggregate_summary(strategy_books, curve_stats_by_strategy),
         "open_orders": combine_open_orders(strategy_books),
         "recent_closed_orders": combine_recent_closed_orders(strategy_books),
         "recent_events": combine_recent_events(strategy_books),
         "recent_equity_curve": state.get("recent_equity_curve") or [],
-        "strategy_books": build_strategy_books_payload(strategy_books),
+        "strategy_books": build_strategy_books_payload(strategy_books, curve_stats_by_strategy),
     }
     write_json(LATEST_PATH, payload)
     return payload
@@ -586,14 +802,18 @@ def append_curve_row(strategy_id, strategy_code, strategy_label, snapshot_id, ca
     return row
 
 
-def process_book_snapshot(book, strategy_id, rows_by_symbol, signals_by_symbol, snapshot_id, captured_at_utc):
+def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbol, signals_by_symbol, snapshot_id, captured_at_utc):
     closed_symbols = set()
     next_open_orders = []
     config = book.get("config") or {}
 
     for order in book.get("open_orders") or []:
         row = rows_by_symbol.get(order.get("symbol"))
-        layer_signal = (signals_by_symbol.get(order.get("symbol")) or {}).get(strategy_id) if row else None
+        if row is None and strategy_uses_holdable_exit(strategy_id):
+            row = watch_rows_by_symbol.get(order.get("symbol"))
+        layer_signal = None
+        if row and not row.get("paper_trader_watch_only"):
+            layer_signal = (signals_by_symbol.get(order.get("symbol")) or {}).get(strategy_id)
         mark_price = get_current_price(row) if row else (safe_float(order.get("last_mark_price")) or safe_float(order.get("entry_price")))
         entry_dt = parse_dt(order.get("entry_time")) or parse_dt(captured_at_utc)
         current_dt = parse_dt(captured_at_utc)
@@ -684,6 +904,8 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, signals_by_symbol, 
 
     for signal in candidates:
         row = signal.get("row") or {}
+        if row.get("paper_trader_watch_only"):
+            continue
         symbol = row.get("symbol")
         if not symbol or symbol in closed_symbols:
             continue
@@ -758,11 +980,14 @@ def process_snapshot(rows, snapshot_id, captured_at_utc, captured_at_cst):
         payload["noop"] = True
         return payload
 
-    rows_by_symbol = {row.get("symbol"): row for row in rows if row.get("symbol")}
+    rows_by_symbol = {str(row.get("symbol")).upper(): row for row in rows if row.get("symbol")}
+    watch_rows_by_symbol = build_watch_pool_rows(state, rows_by_symbol, snapshot_id, captured_at_utc, captured_at_cst)
     signals_by_symbol = {symbol: build_shadow_strategy_signals(row) for symbol, row in rows_by_symbol.items()}
 
     for strategy_id, book in state.get("strategy_books", {}).items():
-        process_book_snapshot(book, strategy_id, rows_by_symbol, signals_by_symbol, snapshot_id, captured_at_utc)
+        process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbol, signals_by_symbol, snapshot_id, captured_at_utc)
+
+    refresh_watch_pool_cache(state, rows_by_symbol)
 
     state["last_processed_snapshot_id"] = snapshot_id
     state["last_processed_at"] = captured_at_utc

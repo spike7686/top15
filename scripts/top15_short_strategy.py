@@ -89,6 +89,21 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
+            "B_no_breakout_fade_wide_hold",
+            {
+                "code": "B++",
+                "signal_name": "no_breakout_fade_wide_hold",
+                "label": "B++ / NoBreakout Hold-Split",
+                "short_label": "B++层",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "description": "B+ 的持仓拆分版：入场仍要求 NoBreakout + 30m 转弱，但持仓只看重新走强、突破恢复或回到前高，不因 entry 条件自然衰减而提前离场。",
+            },
+        ),
+        (
             "C_overheat_fade",
             {
                 "code": "C",
@@ -117,6 +132,21 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
+            "C_overheat_fade_wide_hold",
+            {
+                "code": "C++",
+                "signal_name": "overheat_fade_wide_hold",
+                "label": "C++ / Overheat Hold-Split",
+                "short_label": "C++层",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "description": "C+ 的持仓拆分版：入场仍要求过热 + 30m 转弱，但持仓不再要求继续过热或继续 overlap，只在重新走强或回到前高时提前退出。",
+            },
+        ),
+        (
             "D_extreme_overheat_fade",
             {
                 "code": "D",
@@ -142,6 +172,21 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
                 "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
                 "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
                 "description": "D 对照组：结构止损窗口放宽到 3%~20%，止盈改为 1.5R，专门测试极端过热后的大幅回撤。",
+            },
+        ),
+        (
+            "D_extreme_overheat_fade_wide_hold",
+            {
+                "code": "D++",
+                "signal_name": "extreme_overheat_fade_wide_hold",
+                "label": "D++ / Extreme Hold-Split",
+                "short_label": "D++层",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "description": "D+ 的持仓拆分版：入场仍要求极端过热 + 极端转弱，但持仓只在重新增强或回到前高时退出，不因极端过热消退而离场。",
             },
         ),
     ]
@@ -202,6 +247,61 @@ def compute_short_target_price(entry_price, stop_price, target_r_multiple=1.0):
     if risk_abs <= 0:
         return None
     return entry_price - risk_abs * target_r_multiple
+
+
+def build_hold_split_state(
+    *,
+    current_price,
+    front_high_price,
+    rank_change_30m,
+    overlap_score_delta_30m,
+    darkhorse_score_delta_30m=None,
+    require_no_breakout=False,
+    no_breakout=True,
+):
+    hold_blockers = []
+
+    rank_rebound = rank_change_30m is not None and rank_change_30m > 0
+    overlap_rebound = overlap_score_delta_30m is not None and overlap_score_delta_30m > 0
+    darkhorse_rebound = darkhorse_score_delta_30m is not None and darkhorse_score_delta_30m > 0
+    front_high_price = safe_float(front_high_price)
+    front_high_retest = (
+        current_price not in (None, 0)
+        and front_high_price not in (None, 0)
+        and current_price >= front_high_price
+    )
+    breakout_resumed = require_no_breakout and not no_breakout
+
+    if rank_rebound:
+        hold_blockers.append("30m 排名重新抬升，走势重新增强")
+    if overlap_rebound:
+        hold_blockers.append("30m overlap 共振重新上升")
+    if darkhorse_rebound:
+        hold_blockers.append("30m darkhorse 强度重新上升")
+    if breakout_resumed:
+        hold_blockers.append("1h 再次出现突破结构")
+    if front_high_retest:
+        hold_blockers.append("价格已回到结构前高附近")
+
+    if front_high_retest:
+        hold_exit_code = "front_high_retest"
+    elif breakout_resumed:
+        hold_exit_code = "breakout_resume"
+    elif rank_rebound or overlap_rebound or darkhorse_rebound:
+        hold_exit_code = "strength_resume"
+    else:
+        hold_exit_code = None
+
+    return {
+        "holdable": not hold_blockers,
+        "hold_blockers": hold_blockers,
+        "hold_exit_code": hold_exit_code,
+        "rank_rebound": rank_rebound,
+        "overlap_rebound": overlap_rebound,
+        "darkhorse_rebound": darkhorse_rebound,
+        "front_high_retest": front_high_retest,
+        "breakout_resumed": breakout_resumed,
+    }
 
 
 def load_symbol_1h_klines(symbol: str):
@@ -820,6 +920,132 @@ def build_shadow_strategy_signals(row):
         "breakout_guard": no_breakout,
         "requires_no_breakout_exit": False,
         "signal_summary": "交叉候选进入极端过热区后，darkhorse 与 overlap 分数同步转弱，进入 Extreme Wide 对照组。",
+        "blockers": d_wide_blockers,
+        "current_price": current_price,
+        "structure_stop_price": structure_stop_price,
+        "structure_stop_pct": structure_stop_pct,
+        "structure_target_price": wide_target_price,
+        "structure_target_price_r1": standard_target_price,
+        "target_r_multiple": wide_target_r_multiple,
+        "front_high_price": base_signal.get("front_high_price"),
+        "atr_1h_pct": base_signal.get("atr_1h_pct"),
+        "stop_tradable": wide_stop_tradable,
+        "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+        "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+        "overlap_score": safe_float(enriched.get("overlap_score")),
+    }
+
+    b_hold_state = build_hold_split_state(
+        current_price=current_price,
+        front_high_price=base_signal.get("front_high_price"),
+        rank_change_30m=rank_change_30m,
+        overlap_score_delta_30m=overlap_score_delta_30m,
+        require_no_breakout=True,
+        no_breakout=no_breakout,
+    )
+    layers["B_no_breakout_fade_wide_hold"] = {
+        "strategy_id": "B_no_breakout_fade_wide_hold",
+        "strategy_code": "B++",
+        "strategy_label": shadow_layer_label("B_no_breakout_fade_wide_hold"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["B_no_breakout_fade_wide_hold"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["B_no_breakout_fade_wide_hold"]["description"],
+        "row": enriched,
+        "tier": "shadow",
+        "quality_score": count_true(overlap, generic_weakening, no_breakout, wide_stop_tradable),
+        "triggered": b_triggered,
+        "openable": b_triggered and wide_stop_tradable,
+        "holdable": b_hold_state["holdable"],
+        "use_holdable_exit": True,
+        "hold_blockers": list(b_hold_state["hold_blockers"]),
+        "hold_exit_code": b_hold_state["hold_exit_code"],
+        "anchor_active": overlap,
+        "weakness_active": generic_weakening,
+        "breakout_guard": no_breakout,
+        "requires_no_breakout_exit": False,
+        "signal_summary": "B+ 入场，B++ 持有：仍按 NoBreakout + 30m 转弱开仓，但持仓只在重新走强、突破恢复或回到前高时退出。",
+        "blockers": b_wide_blockers,
+        "current_price": current_price,
+        "structure_stop_price": structure_stop_price,
+        "structure_stop_pct": structure_stop_pct,
+        "structure_target_price": wide_target_price,
+        "structure_target_price_r1": standard_target_price,
+        "target_r_multiple": wide_target_r_multiple,
+        "front_high_price": base_signal.get("front_high_price"),
+        "atr_1h_pct": base_signal.get("atr_1h_pct"),
+        "stop_tradable": wide_stop_tradable,
+        "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+        "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+        "overlap_score": safe_float(enriched.get("overlap_score")),
+    }
+
+    c_hold_state = build_hold_split_state(
+        current_price=current_price,
+        front_high_price=base_signal.get("front_high_price"),
+        rank_change_30m=rank_change_30m,
+        overlap_score_delta_30m=overlap_score_delta_30m,
+    )
+    layers["C_overheat_fade_wide_hold"] = {
+        "strategy_id": "C_overheat_fade_wide_hold",
+        "strategy_code": "C++",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold"]["description"],
+        "row": enriched,
+        "tier": "shadow",
+        "quality_score": count_true(overlap, generic_weakening, c_overheat, wide_stop_tradable),
+        "triggered": c_triggered,
+        "openable": c_triggered and wide_stop_tradable,
+        "holdable": c_hold_state["holdable"],
+        "use_holdable_exit": True,
+        "hold_blockers": list(c_hold_state["hold_blockers"]),
+        "hold_exit_code": c_hold_state["hold_exit_code"],
+        "anchor_active": overlap,
+        "weakness_active": generic_weakening,
+        "breakout_guard": no_breakout,
+        "requires_no_breakout_exit": False,
+        "signal_summary": "C+ 入场，C++ 持有：仍按过热 + 30m 转弱开仓，但持仓不再要求继续过热或继续 overlap，只在重新走强或回到前高时退出。",
+        "blockers": c_wide_blockers,
+        "current_price": current_price,
+        "structure_stop_price": structure_stop_price,
+        "structure_stop_pct": structure_stop_pct,
+        "structure_target_price": wide_target_price,
+        "structure_target_price_r1": standard_target_price,
+        "target_r_multiple": wide_target_r_multiple,
+        "front_high_price": base_signal.get("front_high_price"),
+        "atr_1h_pct": base_signal.get("atr_1h_pct"),
+        "stop_tradable": wide_stop_tradable,
+        "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+        "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+        "overlap_score": safe_float(enriched.get("overlap_score")),
+    }
+
+    d_hold_state = build_hold_split_state(
+        current_price=current_price,
+        front_high_price=base_signal.get("front_high_price"),
+        rank_change_30m=rank_change_30m,
+        overlap_score_delta_30m=overlap_score_delta_30m,
+        darkhorse_score_delta_30m=darkhorse_score_delta_30m,
+    )
+    layers["D_extreme_overheat_fade_wide_hold"] = {
+        "strategy_id": "D_extreme_overheat_fade_wide_hold",
+        "strategy_code": "D++",
+        "strategy_label": shadow_layer_label("D_extreme_overheat_fade_wide_hold"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["D_extreme_overheat_fade_wide_hold"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["D_extreme_overheat_fade_wide_hold"]["description"],
+        "row": enriched,
+        "tier": "shadow",
+        "quality_score": count_true(overlap, extreme_weakening, d_overheat, wide_stop_tradable),
+        "triggered": d_triggered,
+        "openable": d_triggered and wide_stop_tradable,
+        "holdable": d_hold_state["holdable"],
+        "use_holdable_exit": True,
+        "hold_blockers": list(d_hold_state["hold_blockers"]),
+        "hold_exit_code": d_hold_state["hold_exit_code"],
+        "anchor_active": overlap,
+        "weakness_active": extreme_weakening,
+        "breakout_guard": no_breakout,
+        "requires_no_breakout_exit": False,
+        "signal_summary": "D+ 入场，D++ 持有：仍按极端过热 + 极端转弱开仓，但持仓只在重新增强或回到前高时退出。",
         "blockers": d_wide_blockers,
         "current_price": current_price,
         "structure_stop_price": structure_stop_price,

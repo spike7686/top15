@@ -211,6 +211,135 @@ select, input {
 .candidate-score strong { font-size: 24px; }
 .candidate-score small, .candidate-meta span, .evidence-head span, .leader-item p, .candidate-evidence-inline, .leader-kicker { color: var(--muted); }
 .candidate-meta { flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); margin-top: 12px; }
+.equity-sparkline-card {
+  padding: 14px 16px 12px;
+  background: linear-gradient(180deg, rgba(10, 19, 36, 0.92), rgba(7, 14, 27, 0.88));
+  border-color: rgba(79, 140, 255, 0.22);
+}
+.equity-sparkline-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+.equity-sparkline-head strong {
+  display: block;
+  font-size: 24px;
+  line-height: 1.05;
+}
+.equity-sparkline-head small {
+  color: var(--muted);
+}
+.equity-sparkline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  justify-content: flex-end;
+  color: var(--muted);
+  font-size: 12px;
+}
+.equity-sparkline-svg {
+  display: block;
+  width: 100%;
+  height: 92px;
+}
+.equity-sparkline-baseline {
+  stroke: rgba(148, 163, 184, 0.22);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+.equity-sparkline-line {
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.equity-sparkline-line.up,
+.equity-sparkline-dot.up {
+  stroke: var(--good);
+  fill: var(--good);
+}
+.equity-sparkline-line.down,
+.equity-sparkline-dot.down {
+  stroke: var(--bad);
+  fill: var(--bad);
+}
+.equity-sparkline-area {
+  opacity: 0.9;
+}
+.auto-book-sparkline {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.auto-book-sparkline-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.auto-book-sparkline-head strong {
+  display: block;
+  font-size: 20px;
+  line-height: 1;
+}
+.auto-book-sparkline-head small,
+.auto-book-sparkline-axis-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+.auto-book-sparkline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.auto-book-sparkline-svg {
+  display: block;
+  width: 100%;
+  height: 112px;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(52,211,153,0.03), rgba(0,0,0,0) 42%),
+    linear-gradient(0deg, rgba(248,113,113,0.035), rgba(0,0,0,0) 38%);
+  border: 1px solid rgba(148,163,184,0.16);
+}
+.equity-sparkline-axis {
+  stroke: rgba(226, 232, 240, 0.78);
+  stroke-width: 1.15;
+}
+.equity-sparkline-guide {
+  stroke: rgba(148, 163, 184, 0.28);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+.equity-sparkline-scale {
+  fill: rgba(148, 163, 184, 0.9);
+  font-size: 10px;
+}
+.equity-pnl-area-positive,
+.equity-pnl-area-negative {
+  opacity: 0.96;
+}
+.auto-book-sparkline-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.auto-book-sparkline-empty {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
 .candidate-card-darkhorse {
   border-color: rgba(79,140,255,0.26);
   background: linear-gradient(180deg, rgba(12,22,44,0.92), rgba(8,17,32,0.88));
@@ -598,6 +727,25 @@ button[disabled] {
   border-color: rgba(96, 165, 250, 0.24);
 }
 
+.auto-curve-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.auto-curve-actions .ghost {
+  min-width: 168px;
+}
+
+.auto-curve-action-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .auto-book-section {
   display: grid;
   gap: 12px;
@@ -620,6 +768,133 @@ button[disabled] {
   font-size: 13px;
 }
 
+body.modal-open {
+  overflow: hidden;
+}
+
+.curve-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: none;
+}
+
+.curve-modal.is-open {
+  display: block;
+}
+
+.curve-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.74);
+  backdrop-filter: blur(10px);
+}
+
+.curve-modal-dialog {
+  position: relative;
+  width: min(1120px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  margin: 16px auto;
+  overflow: auto;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(10,18,32,0.98), rgba(8,14,24,0.96));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
+}
+
+.curve-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px 20px 0;
+}
+
+.curve-modal-head h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.curve-modal-head p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.curve-modal-body {
+  padding: 20px;
+}
+
+.curve-viewer-card {
+  border-color: rgba(45, 212, 191, 0.18);
+  background: linear-gradient(180deg, rgba(8,18,28,0.96), rgba(6,12,22,0.94));
+}
+
+.curve-viewer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.curve-viewer-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  border: 1px solid rgba(45, 212, 191, 0.18);
+  background:
+    linear-gradient(180deg, rgba(20, 184, 166, 0.15), rgba(15, 23, 42, 0.06) 26%, rgba(15, 23, 42, 0.04) 100%),
+    linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.98));
+}
+
+.curve-viewer-grid {
+  stroke: rgba(148, 163, 184, 0.12);
+  stroke-width: 1;
+}
+
+.curve-viewer-axis {
+  stroke: rgba(148, 163, 184, 0.42);
+  stroke-width: 1;
+}
+
+.curve-viewer-zero {
+  stroke: rgba(45, 212, 191, 0.52);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.curve-viewer-line {
+  fill: none;
+  stroke: #17f1d1;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.curve-viewer-dot {
+  fill: #17f1d1;
+  stroke: rgba(8, 14, 24, 0.9);
+  stroke-width: 1.25;
+}
+
+.curve-viewer-label {
+  fill: rgba(226, 232, 240, 0.84);
+  font-size: 11px;
+}
+
+.curve-viewer-axis-title {
+  fill: rgba(226, 232, 240, 0.9);
+  font-size: 12px;
+}
+
+.curve-viewer-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 @media (max-width: 1280px) {
   .stats-row,
   .short-strategy-grid,
@@ -627,6 +902,12 @@ button[disabled] {
   .paper-settings,
   .paper-summary-grid {
     grid-template-columns: repeat(2, minmax(0,1fr));
+  }
+
+  .auto-curve-actions,
+  .curve-modal-head {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .short-trading-grid {

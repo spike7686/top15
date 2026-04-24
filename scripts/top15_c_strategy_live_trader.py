@@ -52,6 +52,15 @@ def now_utc_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def read_json(path: Path, default=None):
     if not path.exists():
         return default
@@ -522,6 +531,16 @@ def is_max_quantity_error(exc):
     return "-4005" in text or "Quantity greater than max quantity" in text
 
 
+def is_position_limit_error(exc):
+    text = repr(exc)
+    return "-2027" in text or "Exceeded the maximum allowable position at current leverage" in text
+
+
+def is_unable_to_fill_error(exc):
+    text = repr(exc)
+    return "-2020" in text or "Unable to fill" in text
+
+
 def resolve_signal_stop_window(signal):
     signal = signal if isinstance(signal, dict) else {}
     min_pct = safe_float(signal.get("stop_window_min_pct"))
@@ -555,6 +574,29 @@ def refresh_signal_for_runtime(signal):
         signal["quality_score"] = max(0, int(signal.get("quality_score") or 0) + delta)
     signal["blockers"] = blockers
     return signal
+
+
+def signal_allows_holding(signal):
+    signal = signal if isinstance(signal, dict) else {}
+    if signal.get("use_holdable_exit"):
+        return bool(signal.get("holdable", True))
+    return bool(signal.get("openable"))
+
+
+def strategy_uses_holdable_exit(strategy_id):
+    return str(strategy_id or "").endswith("_wide_hold")
+
+
+def resolve_max_hold_hours(config, trade=None):
+    strategy_cfg = (config or {}).get("strategy") or {}
+    if isinstance(trade, dict):
+        trade_max_hold = safe_float(trade.get("max_hold_hours"))
+        if trade_max_hold is not None:
+            return trade_max_hold
+    configured = safe_float(strategy_cfg.get("max_hold_hours"))
+    if configured is not None:
+        return configured
+    return safe_float((short_strategy_module.STRUCTURE_CONFIG or {}).get("max_hold_hours")) or 12.0
 
 
 def create_journal_event(event_type, payload):
@@ -947,8 +989,35 @@ def manage_existing_trades(client, config, state, signal_map, short_positions, a
             )
             state["active_trades"].pop(symbol, None)
             continue
+        opened_at = parse_dt(trade.get("opened_at"))
+        max_hold_hours = resolve_max_hold_hours(config, trade)
+        age_hours = (
+            max(0.0, (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600.0)
+            if opened_at
+            else None
+        )
+        if age_hours is not None and max_hold_hours > 0 and age_hours >= max_hold_hours:
+            result = close_trade_market(
+                client,
+                config,
+                trade,
+                short_positions,
+                symbol_info,
+                "timeout",
+                snapshot_id,
+            )
+            state["active_trades"].pop(symbol, None)
+            closed.append(result)
+            continue
         signal = signal_map.get(symbol)
-        if config["strategy"].get("exit_on_signal_loss", True) and not (signal and signal.get("openable")):
+        exit_on_signal_loss = bool(config["strategy"].get("exit_on_signal_loss", True))
+        should_exit_for_signal = False
+        if exit_on_signal_loss:
+            if signal is None:
+                should_exit_for_signal = not strategy_uses_holdable_exit(trade.get("strategy_id"))
+            else:
+                should_exit_for_signal = not signal_allows_holding(signal)
+        if should_exit_for_signal:
             result = close_trade_market(
                 client,
                 config,
@@ -1021,7 +1090,7 @@ def open_new_trades(
             current_qty = plan["quantity"]
             current_notional_usd = plan["notional_usd"]
             entry_resp = None
-            last_margin_error = None
+            last_entry_error = None
             for attempt in range(max_entry_retries):
                 try:
                     if config["execution"].get("validate_entry_with_test_order", True):
@@ -1033,13 +1102,22 @@ def open_new_trades(
                     )
                     break
                 except Exception as exc:
-                    if not (is_margin_insufficient_error(exc) or is_max_quantity_error(exc)):
+                    if not (
+                        is_margin_insufficient_error(exc)
+                        or is_max_quantity_error(exc)
+                        or is_position_limit_error(exc)
+                        or is_unable_to_fill_error(exc)
+                    ):
                         raise
-                    last_margin_error = repr(exc)
+                    last_entry_error = repr(exc)
                     if is_max_quantity_error(exc):
                         next_qty = round_qty_down(max_market_qty(symbol_info), symbol_info)
                         if next_qty >= current_qty:
                             next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
+                    elif is_position_limit_error(exc):
+                        next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
+                    elif is_unable_to_fill_error(exc):
+                        next_qty = current_qty if attempt == 0 else shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
                     else:
                         next_qty = shrink_qty_down(current_qty, symbol_info, retry_shrink_pct)
                     next_notional_usd = next_qty * plan["market_price"]
@@ -1057,7 +1135,7 @@ def open_new_trades(
                             "symbol": symbol,
                             "snapshot_id": snapshot_id,
                             "attempt": attempt + 1,
-                            "error": last_margin_error,
+                            "error": last_entry_error,
                             "old_qty": current_qty,
                             "new_qty": next_qty,
                             "old_notional_usd": current_notional_usd,
@@ -1067,12 +1145,17 @@ def open_new_trades(
                     current_qty = next_qty
                     current_notional_usd = next_notional_usd
             if not entry_resp:
-                raise RuntimeError(last_margin_error or f"{symbol} 未能生成有效入场回报")
+                raise RuntimeError(last_entry_error or f"{symbol} 未能生成有效入场回报")
             executed_qty = safe_float(entry_resp.get("executedQty")) or safe_float(entry_resp.get("origQty")) or current_qty
             entry_price = safe_float(entry_resp.get("avgPrice")) or plan["market_price"]
             stop_price = round_price_up(signal["structure_stop_price"], symbol_info)
             risk_abs = stop_price - entry_price if entry_price is not None else None
-            target_price = (entry_price - risk_abs) if entry_price is not None and risk_abs is not None else None
+            target_r_multiple = safe_float(signal.get("target_r_multiple")) or 1.0
+            target_price = (
+                entry_price - risk_abs * target_r_multiple
+                if entry_price is not None and risk_abs is not None
+                else None
+            )
             if entry_price in (None, 0) or risk_abs is None or risk_abs <= 0 or target_price is None or target_price <= 0:
                 abort_qty = round_qty_down(executed_qty, symbol_info) or plan["quantity"]
                 client.market_close_short(
@@ -1101,6 +1184,7 @@ def open_new_trades(
                 "strategy_id": config["strategy"]["strategy_id"],
                 "snapshot_id": snapshot_id,
                 "opened_at": now_utc_iso(),
+                "max_hold_hours": resolve_max_hold_hours(config),
                 "signal_summary": signal.get("signal_summary"),
                 "quality_score": signal.get("quality_score"),
                 "entry": {
@@ -1114,6 +1198,7 @@ def open_new_trades(
                 "structure": {
                     "stop_price": stop_price,
                     "target_price": target_price,
+                    "target_r_multiple": target_r_multiple,
                     "stop_pct": ((stop_price / entry_price) - 1) * 100 if entry_price else None,
                     "front_high_price": safe_float(signal.get("front_high_price")),
                     "atr_1h_pct": safe_float(signal.get("atr_1h_pct")),

@@ -278,8 +278,8 @@
               </div>
               <div>
                 <div class="section-mini-head">
-                  <h3>权益曲线</h3>
-                  <p>按 5 分钟快照记录账户变化</p>
+                  <h3>收益图入口</h3>
+                  <p>点击按钮后渲染全历史收益率曲线，按 4 小时采样一个点</p>
                 </div>
                 <div id="autoTraderCurveList" class="candidate-list"></div>
               </div>
@@ -399,6 +399,19 @@
             </section>
           </aside>
         </section>
+      </div>
+    </div>
+    <div id="autoCurveModal" class="curve-modal" aria-hidden="true">
+      <div class="curve-modal-backdrop" data-action="close-auto-curve"></div>
+      <div class="curve-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="autoCurveModalTitle">
+        <div class="curve-modal-head">
+          <div>
+            <h3 id="autoCurveModalTitle">收益率曲线</h3>
+            <p id="autoCurveModalSubtitle">--</p>
+          </div>
+          <button type="button" class="ghost" data-action="close-auto-curve">关闭</button>
+        </div>
+        <div id="autoCurveModalBody" class="curve-modal-body"></div>
       </div>
     </div>
     <script src="./app.js"></script>

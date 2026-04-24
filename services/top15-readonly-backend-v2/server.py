@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 WORKDIR = BASE_DIR.parent.parent
@@ -256,8 +256,317 @@ def latest_analysis():
     return enriched_rows
 
 
+def load_paper_trader_recent_curves(per_strategy_limit=96, aggregate_limit=144):
+    path = DATA_DIR / 'paper_trader' / 'equity_curve.csv'
+    curves = {}
+    if not path.exists():
+        return curves
+
+    try:
+        with path.open('r', encoding='utf-8', newline='') as handle:
+            rows = [dict(row) for row in csv.DictReader(handle) if isinstance(row, dict)]
+    except Exception:
+        return curves
+
+    for row in rows:
+        strategy_id = row.get('strategy_id')
+        if not strategy_id:
+            continue
+        curves.setdefault(strategy_id, []).append(row)
+
+    for strategy_id, items in list(curves.items()):
+        items.sort(key=lambda item: item.get('captured_at_utc') or '')
+        limit = aggregate_limit if strategy_id == 'aggregate' else per_strategy_limit
+        curves[strategy_id] = items[-limit:]
+
+    return curves
+
+
+def load_paper_trader_curve_history(strategy_id='aggregate', interval_hours=4):
+    path = DATA_DIR / 'paper_trader' / 'equity_curve.csv'
+    if not path.exists():
+        return []
+
+    try:
+        bucket_ms = max(1, int(float(interval_hours or 4) * 60 * 60 * 1000))
+    except (TypeError, ValueError):
+        bucket_ms = 4 * 60 * 60 * 1000
+
+    rows = []
+    try:
+        with path.open('r', encoding='utf-8', newline='') as handle:
+            for row in csv.DictReader(handle):
+                if not isinstance(row, dict):
+                    continue
+                if (row.get('strategy_id') or '') != strategy_id:
+                    continue
+                captured_at = row.get('captured_at_utc')
+                dt = parse_dt(captured_at)
+                if not dt:
+                    continue
+                rows.append({
+                    **row,
+                    '_ts_ms': int(dt.timestamp() * 1000),
+                })
+    except Exception:
+        return []
+
+    rows.sort(key=lambda item: item['_ts_ms'])
+    if not rows:
+        return []
+
+    sampled = []
+    current_bucket = None
+    last_in_bucket = None
+    for row in rows:
+        bucket = row['_ts_ms'] // bucket_ms
+        if current_bucket is None:
+            current_bucket = bucket
+        if bucket != current_bucket:
+            if last_in_bucket is not None:
+                sampled.append({key: value for key, value in last_in_bucket.items() if key != '_ts_ms'})
+            current_bucket = bucket
+        last_in_bucket = row
+
+    if last_in_bucket is not None:
+        sampled.append({key: value for key, value in last_in_bucket.items() if key != '_ts_ms'})
+
+    return sampled
+
+
+def sample_curve_rows(rows, interval_hours=4):
+    try:
+        bucket_ms = max(1, int(float(interval_hours or 4) * 60 * 60 * 1000))
+    except (TypeError, ValueError):
+        bucket_ms = 4 * 60 * 60 * 1000
+
+    normalized = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        dt = parse_dt(row.get('captured_at_utc'))
+        if not dt:
+            continue
+        normalized.append({**row, '_ts_ms': int(dt.timestamp() * 1000)})
+
+    normalized.sort(key=lambda item: item['_ts_ms'])
+    if not normalized:
+        return []
+
+    sampled = []
+    current_bucket = None
+    last_in_bucket = None
+    for row in normalized:
+        bucket = row['_ts_ms'] // bucket_ms
+        if current_bucket is None:
+            current_bucket = bucket
+        if bucket != current_bucket:
+            if last_in_bucket is not None:
+                sampled.append({key: value for key, value in last_in_bucket.items() if key != '_ts_ms'})
+            current_bucket = bucket
+        last_in_bucket = row
+
+    if last_in_bucket is not None:
+        sampled.append({key: value for key, value in last_in_bucket.items() if key != '_ts_ms'})
+
+    return sampled
+
+
+def iso_to_cst(utc_value):
+    dt = parse_dt(utc_value)
+    if not dt:
+        return None
+    return (dt + timedelta(hours=8)).isoformat()
+
+
+def compute_live_trade_pnl(open_event, close_event):
+    open_entry = (open_event or {}).get('entry') or {}
+    open_resp = open_entry.get('response') or {}
+    close_resp = (close_event or {}).get('close_response') or {}
+
+    entry_price = safe_float(open_entry.get('avg_price'))
+    if entry_price is None:
+        entry_price = safe_float(open_resp.get('avgPrice'))
+
+    close_price = safe_float(close_resp.get('avgPrice'))
+    qty = safe_float(close_resp.get('executedQty'))
+    if qty is None:
+        qty = safe_float(open_entry.get('executed_qty'))
+    if qty is None:
+        qty = safe_float(open_resp.get('executedQty'))
+
+    if entry_price is None or close_price is None or qty is None:
+        return None
+    return (entry_price - close_price) * qty
+
+
+def build_live_trade_stats(starting_capital_usd, current_equity_usd, current_unrealized_pnl_usd, last_run_at):
+    events = read_jsonl_tail(LIVE_TRADER_TESTNET_DIR / 'journal.jsonl', 100000)
+    events = [item for item in events if isinstance(item, dict)]
+    events.sort(key=lambda item: item.get('ts') or '')
+
+    open_events_by_symbol = {}
+    closed_count = 0
+    opened_count = 0
+    matched_closed_count = 0
+    win_count = 0
+    loss_count = 0
+    realized_equity_usd = starting_capital_usd
+    curve_rows = []
+
+    first_ts = (events[0].get('ts') if events else None) or last_run_at
+    if first_ts:
+        curve_rows.append({
+            'captured_at_utc': first_ts,
+            'captured_at_cst': iso_to_cst(first_ts),
+            'equity_usd': starting_capital_usd,
+            'realized_pnl_usd': 0.0,
+            'unrealized_pnl_usd': 0.0,
+            'open_count': 0,
+            'closed_count': 0,
+            'win_count': 0,
+            'loss_count': 0,
+        })
+
+    for event in events:
+        event_type = event.get('event_type')
+        symbol = event.get('symbol')
+        if event_type == 'trade_opened':
+            opened_count += 1
+            if symbol:
+                open_events_by_symbol.setdefault(symbol, []).append(event)
+            continue
+
+        if event_type not in ('trade_closed', 'trade_closed_without_market_exit'):
+            continue
+
+        closed_count += 1
+        pnl_usd = None
+        if symbol and open_events_by_symbol.get(symbol):
+            open_event = open_events_by_symbol[symbol].pop(0)
+            pnl_usd = compute_live_trade_pnl(open_event, event)
+            if pnl_usd is not None:
+                matched_closed_count += 1
+                realized_equity_usd += pnl_usd
+                if pnl_usd > 0:
+                    win_count += 1
+                elif pnl_usd < 0:
+                    loss_count += 1
+
+        curve_rows.append({
+            'captured_at_utc': event.get('ts'),
+            'captured_at_cst': iso_to_cst(event.get('ts')),
+            'equity_usd': realized_equity_usd,
+            'realized_pnl_usd': realized_equity_usd - starting_capital_usd,
+            'unrealized_pnl_usd': 0.0,
+            'open_count': max(opened_count - closed_count, 0),
+            'closed_count': closed_count,
+            'win_count': win_count,
+            'loss_count': loss_count,
+            'pnl_usd': pnl_usd,
+        })
+
+    current_equity_usd = current_equity_usd if current_equity_usd is not None else starting_capital_usd
+    current_unrealized_pnl_usd = current_unrealized_pnl_usd if current_unrealized_pnl_usd is not None else 0.0
+    current_realized_pnl_usd = current_equity_usd - starting_capital_usd - current_unrealized_pnl_usd
+    current_point_ts = last_run_at or first_ts
+    if current_point_ts:
+        current_point = {
+            'captured_at_utc': current_point_ts,
+            'captured_at_cst': iso_to_cst(current_point_ts),
+            'equity_usd': current_equity_usd,
+            'realized_pnl_usd': current_realized_pnl_usd,
+            'unrealized_pnl_usd': current_unrealized_pnl_usd,
+            'open_count': max(opened_count - closed_count, 0),
+            'closed_count': closed_count,
+            'win_count': win_count,
+            'loss_count': loss_count,
+        }
+        if not curve_rows or curve_rows[-1].get('captured_at_utc') != current_point_ts or safe_float(curve_rows[-1].get('equity_usd')) != current_equity_usd:
+            curve_rows.append(current_point)
+        else:
+            curve_rows[-1] = current_point
+
+    equity_values = [safe_float(row.get('equity_usd')) for row in curve_rows]
+    equity_values = [value for value in equity_values if value is not None]
+    peak = None
+    max_drawdown_usd = 0.0
+    max_drawdown_pct = None
+    for value in equity_values:
+        peak = value if peak is None else max(peak, value)
+        drawdown_usd = peak - value
+        drawdown_pct = (drawdown_usd / peak * 100.0) if peak else None
+        if drawdown_usd > max_drawdown_usd:
+            max_drawdown_usd = drawdown_usd
+            max_drawdown_pct = drawdown_pct
+
+    equity_change_last_snapshot_usd = 0.0
+    equity_change_last_snapshot_pct = 0.0
+    if len(equity_values) >= 2:
+        prev = equity_values[-2]
+        curr = equity_values[-1]
+        equity_change_last_snapshot_usd = curr - prev
+        equity_change_last_snapshot_pct = (equity_change_last_snapshot_usd / prev * 100.0) if prev else None
+
+    return {
+        'closed_count': closed_count,
+        'total_order_count': opened_count + closed_count,
+        'win_count': win_count,
+        'loss_count': loss_count,
+        'win_rate': (win_count / matched_closed_count) if matched_closed_count else None,
+        'equity_peak_usd': peak,
+        'max_drawdown_usd': max_drawdown_usd,
+        'max_drawdown_pct': max_drawdown_pct,
+        'equity_change_last_snapshot_usd': equity_change_last_snapshot_usd,
+        'equity_change_last_snapshot_pct': equity_change_last_snapshot_pct,
+        'curve_point_count': len(curve_rows),
+        'recent_equity_curve': curve_rows[-144:],
+        'curve_history': curve_rows,
+    }
+
+
+def enrich_live_trader_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+
+    starting_capital_usd = safe_float(payload.get('starting_capital_usd')) or 4941.0
+    account = payload.get('account') or {}
+    summary = payload.get('summary') or {}
+    current_equity_usd = safe_float(account.get('equity_usd')) or safe_float(summary.get('equity_usd')) or starting_capital_usd
+    current_unrealized_pnl_usd = safe_float(summary.get('unrealized_pnl_usd')) or 0.0
+    stats = build_live_trade_stats(
+        starting_capital_usd=starting_capital_usd,
+        current_equity_usd=current_equity_usd,
+        current_unrealized_pnl_usd=current_unrealized_pnl_usd,
+        last_run_at=payload.get('last_run_at'),
+    )
+
+    summary_patch = {
+        **summary,
+        'closed_count': stats['closed_count'],
+        'total_order_count': stats['total_order_count'],
+        'win_count': stats['win_count'],
+        'loss_count': stats['loss_count'],
+        'win_rate': stats['win_rate'],
+        'equity_peak_usd': stats['equity_peak_usd'],
+        'max_drawdown_usd': stats['max_drawdown_usd'],
+        'max_drawdown_pct': stats['max_drawdown_pct'],
+        'equity_change_last_snapshot_usd': stats['equity_change_last_snapshot_usd'],
+        'equity_change_last_snapshot_pct': stats['equity_change_last_snapshot_pct'],
+        'curve_point_count': stats['curve_point_count'],
+    }
+
+    return {
+        **payload,
+        'summary': summary_patch,
+        'recent_equity_curve': stats['recent_equity_curve'],
+        '_curve_history': stats['curve_history'],
+    }
+
+
 def latest_paper_trader():
     payload = read_json(DATA_DIR / 'paper_trader' / 'latest.json', default=None)
+    curve_rows_by_strategy = load_paper_trader_recent_curves()
     strategy_books = {}
     for strategy_id, layer in SHADOW_STRATEGY_LAYERS.items():
         strategy_books[strategy_id] = {
@@ -297,14 +606,31 @@ def latest_paper_trader():
                 'loss_count': 0,
                 'total_realized_r': 0.0,
                 'win_rate': None,
+                'total_order_count': 0,
+                'equity_peak_usd': safe_float(RISK_CONFIG.get('initial_equity_usd')) or 10000.0,
+                'max_drawdown_usd': 0.0,
+                'max_drawdown_pct': 0.0,
+                'equity_change_last_snapshot_usd': 0.0,
+                'equity_change_last_snapshot_pct': 0.0,
+                'curve_point_count': 0,
             },
             'open_orders': [],
             'recent_closed_orders': [],
             'recent_events': [],
-            'recent_equity_curve': [],
+            'recent_equity_curve': list(curve_rows_by_strategy.get(strategy_id) or []),
         }
     if isinstance(payload, dict):
         if payload.get('strategy_books'):
+            if curve_rows_by_strategy:
+                payload = {**payload}
+                payload['recent_equity_curve'] = list(curve_rows_by_strategy.get('aggregate') or payload.get('recent_equity_curve') or [])
+                patched_books = {}
+                for strategy_id, book in (payload.get('strategy_books') or {}).items():
+                    patched_books[strategy_id] = {
+                        **book,
+                        'recent_equity_curve': list(curve_rows_by_strategy.get(strategy_id) or book.get('recent_equity_curve') or []),
+                    }
+                payload['strategy_books'] = patched_books
             return payload
         legacy = dict(payload)
         strategy_books['A_post_confirm_weak_turn'] = {
@@ -322,7 +648,7 @@ def latest_paper_trader():
             'open_orders': list(legacy.get('open_orders') or []),
             'recent_closed_orders': list(legacy.get('recent_closed_orders') or []),
             'recent_events': list(legacy.get('recent_events') or []),
-            'recent_equity_curve': list(legacy.get('recent_equity_curve') or []),
+            'recent_equity_curve': list(curve_rows_by_strategy.get('A_post_confirm_weak_turn') or legacy.get('recent_equity_curve') or []),
         }
         return {
             **legacy,
@@ -341,6 +667,7 @@ def latest_paper_trader():
                 **(legacy.get('summary') or {}),
                 'strategy_book_count': len(SHADOW_STRATEGY_LAYERS),
             },
+            'recent_equity_curve': list(curve_rows_by_strategy.get('aggregate') or legacy.get('recent_equity_curve') or []),
             'strategy_books': strategy_books,
         }
     return {
@@ -372,12 +699,19 @@ def latest_paper_trader():
             'loss_count': 0,
             'total_realized_r': 0.0,
             'win_rate': None,
+            'total_order_count': 0,
+            'equity_peak_usd': (safe_float(RISK_CONFIG.get('initial_equity_usd')) or 10000.0) * len(SHADOW_STRATEGY_LAYERS),
+            'max_drawdown_usd': 0.0,
+            'max_drawdown_pct': 0.0,
+            'equity_change_last_snapshot_usd': 0.0,
+            'equity_change_last_snapshot_pct': 0.0,
+            'curve_point_count': 0,
             'strategy_book_count': len(SHADOW_STRATEGY_LAYERS),
         },
         'open_orders': [],
         'recent_closed_orders': [],
         'recent_events': [],
-        'recent_equity_curve': [],
+        'recent_equity_curve': list(curve_rows_by_strategy.get('aggregate') or []),
         'strategy_books': strategy_books,
     }
 
@@ -385,7 +719,7 @@ def latest_paper_trader():
 def latest_live_trader_testnet():
     payload = read_json(LIVE_TRADER_TESTNET_DIR / 'latest.json', default=None)
     if isinstance(payload, dict):
-        return payload
+        return enrich_live_trader_payload(payload)
 
     config = read_json(LIVE_TRADER_TESTNET_CONFIG_PATH, default={}) or {}
     state = read_json(LIVE_TRADER_TESTNET_DIR / 'state.json', default={}) or {}
@@ -423,7 +757,7 @@ def latest_live_trader_testnet():
     positions.sort(key=lambda item: item.get('opened_at') or '', reverse=True)
 
     starting_capital_usd = safe_float(((config.get('reporting') or {}).get('starting_capital_usd'))) or 4941.0
-    return {
+    return enrich_live_trader_payload({
         'ok': True,
         'version': state.get('version') or 'c_strategy_testnet_v1',
         'account_label': config.get('account_label') or 'binance_c_strategy_testnet',
@@ -458,7 +792,7 @@ def latest_live_trader_testnet():
             'closed': [],
             'failed': [],
         },
-    }
+    })
 
 
 def list_snapshots(limit=100):
@@ -470,7 +804,9 @@ def list_snapshots(limit=100):
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query or '')
 
         if path == '/api/health':
             return json_response(self, {
@@ -504,10 +840,33 @@ class Handler(BaseHTTPRequestHandler):
                 'paper_trader': latest_paper_trader(),
             })
 
-        if path == '/api/live-trader-testnet':
+        if path == '/api/paper-trader-curve':
+            strategy_id = ((query.get('strategy_id') or ['aggregate'])[0] or 'aggregate').strip()
+            interval_hours = (query.get('interval_hours') or ['4'])[0]
             return json_response(self, {
                 'ok': True,
-                'live_trader_testnet': latest_live_trader_testnet(),
+                'strategy_id': strategy_id,
+                'interval_hours': safe_float(interval_hours) or 4.0,
+                'rows': load_paper_trader_curve_history(strategy_id=strategy_id, interval_hours=interval_hours),
+            })
+
+        if path == '/api/live-trader-testnet':
+            payload = latest_live_trader_testnet() or {}
+            if isinstance(payload, dict):
+                payload = {key: value for key, value in payload.items() if key != '_curve_history'}
+            return json_response(self, {
+                'ok': True,
+                'live_trader_testnet': payload,
+            })
+
+        if path == '/api/live-trader-testnet-curve':
+            interval_hours = (query.get('interval_hours') or ['4'])[0]
+            payload = latest_live_trader_testnet() or {}
+            curve_rows = sample_curve_rows((payload.get('_curve_history') or []), interval_hours=interval_hours)
+            return json_response(self, {
+                'ok': True,
+                'interval_hours': safe_float(interval_hours) or 4.0,
+                'rows': curve_rows,
             })
 
         if path == '/api/short-strategy-config':

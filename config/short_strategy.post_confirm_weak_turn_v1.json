@@ -147,6 +147,11 @@
       "label": "B+ / NoBreakout Wide",
       "signal_name": "no_breakout_fade_wide"
     },
+    "B_no_breakout_fade_wide_hold": {
+      "code": "B++",
+      "label": "B++ / NoBreakout Hold-Split",
+      "signal_name": "no_breakout_fade_wide_hold"
+    },
     "C_overheat_fade": {
       "code": "C",
       "label": "C / Overheat Fade",
@@ -157,6 +162,11 @@
       "label": "C+ / Overheat Wide",
       "signal_name": "overheat_fade_wide"
     },
+    "C_overheat_fade_wide_hold": {
+      "code": "C++",
+      "label": "C++ / Overheat Hold-Split",
+      "signal_name": "overheat_fade_wide_hold"
+    },
     "D_extreme_overheat_fade": {
       "code": "D",
       "label": "D / Extreme Overheat Fade",
@@ -166,6 +176,11 @@
       "code": "D+",
       "label": "D+ / Extreme Wide",
       "signal_name": "extreme_overheat_fade_wide"
+    },
+    "D_extreme_overheat_fade_wide_hold": {
+      "code": "D++",
+      "label": "D++ / Extreme Hold-Split",
+      "signal_name": "extreme_overheat_fade_wide_hold"
     }
   }
 }

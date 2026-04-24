@@ -79,6 +79,16 @@ const FALLBACK_SHADOW_STRATEGIES = {
     stop_window_max_pct: 20,
     target_r_multiple: 1.5
   },
+  B_no_breakout_fade_wide_hold: {
+    code: 'B++',
+    label: 'B++ / NoBreakout Hold-Split',
+    signal_name: 'no_breakout_fade_wide_hold',
+    description: 'B+ 的持仓拆分版：入场仍要求 NoBreakout + 30m 转弱，但持仓只看重新走强、突破恢复或回到前高，不因 entry 条件自然衰减而提前离场。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5
+  },
   C_overheat_fade: {
     code: 'C',
     label: 'C / Overheat Fade',
@@ -97,6 +107,16 @@ const FALLBACK_SHADOW_STRATEGIES = {
     stop_window_max_pct: 20,
     target_r_multiple: 1.5
   },
+  C_overheat_fade_wide_hold: {
+    code: 'C++',
+    label: 'C++ / Overheat Hold-Split',
+    signal_name: 'overheat_fade_wide_hold',
+    description: 'C+ 的持仓拆分版：入场仍要求过热 + 30m 转弱，但持仓不再要求继续过热或继续 overlap，只在重新走强或回到前高时提前退出。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5
+  },
   D_extreme_overheat_fade: {
     code: 'D',
     label: 'D / Extreme Overheat Fade',
@@ -110,6 +130,16 @@ const FALLBACK_SHADOW_STRATEGIES = {
     label: 'D+ / Extreme Wide',
     signal_name: 'extreme_overheat_fade_wide',
     description: 'D 对照组：结构止损窗口放宽到 3%~20%，止盈改为 1.5R，专门测试极端过热后的大幅回撤。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5
+  },
+  D_extreme_overheat_fade_wide_hold: {
+    code: 'D++',
+    label: 'D++ / Extreme Hold-Split',
+    signal_name: 'extreme_overheat_fade_wide_hold',
+    description: 'D+ 的持仓拆分版：入场仍要求极端过热 + 极端转弱，但持仓只在重新增强或回到前高时退出，不因极端过热消退而离场。',
     entry_filters: [],
     stop_window_min_pct: 3,
     stop_window_max_pct: 20,
@@ -194,6 +224,9 @@ let autoTraderState = loadAutoTraderState();
 let serverPaperTrader = null;
 let liveTraderTestnet = null;
 let activeWorkspaceTab = DEFAULT_WORKSPACE_TAB;
+let openAutoCurveStrategyId = null;
+const autoCurveHistoryCache = new Map();
+const liveCurveHistoryCache = new Map();
 
 const el = (id) => document.getElementById(id);
 const setControlValue = (id, value) => {
@@ -808,7 +841,14 @@ function emptyServerStrategyBook(strategyId, def = {}) {
       win_count: 0,
       loss_count: 0,
       total_realized_r: 0,
-      win_rate: null
+      total_order_count: 0,
+      win_rate: null,
+      equity_peak_usd: toNum(risk.initial_equity_usd) ?? 10000,
+      max_drawdown_usd: 0,
+      max_drawdown_pct: 0,
+      equity_change_last_snapshot_usd: 0,
+      equity_change_last_snapshot_pct: 0,
+      curve_point_count: 0
     },
     open_orders: [],
     recent_closed_orders: [],
@@ -830,6 +870,8 @@ function aggregateServerBookSummary(strategyBooks) {
   const winCount = books.reduce((sum, book) => sum + (toNum(book.summary?.win_count) || 0), 0);
   const lossCount = books.reduce((sum, book) => sum + (toNum(book.summary?.loss_count) || 0), 0);
   const totalRealizedR = books.reduce((sum, book) => sum + (toNum(book.summary?.total_realized_r) || 0), 0);
+  const totalOrderCount = books.reduce((sum, book) => sum + (toNum(book.summary?.total_order_count) || 0), 0);
+  const equityChangeLastSnapshotUsd = books.reduce((sum, book) => sum + (toNum(book.summary?.equity_change_last_snapshot_usd) || 0), 0);
   return {
     starting_equity_usd: startingEquityUsd,
     equity_usd: equityUsd,
@@ -842,9 +884,441 @@ function aggregateServerBookSummary(strategyBooks) {
     win_count: winCount,
     loss_count: lossCount,
     total_realized_r: totalRealizedR,
+    total_order_count: totalOrderCount,
     win_rate: closedCount ? winCount / closedCount : null,
+    equity_peak_usd: null,
+    max_drawdown_usd: 0,
+    max_drawdown_pct: null,
+    equity_change_last_snapshot_usd: equityChangeLastSnapshotUsd,
+    equity_change_last_snapshot_pct: null,
+    curve_point_count: 0,
     strategy_book_count: books.length
   };
+}
+
+function getSummaryOrderCount(summary = {}) {
+  return Math.round(toNum(summary.total_order_count) ?? ((toNum(summary.open_count) || 0) + (toNum(summary.closed_count) || 0)));
+}
+
+function fmtCurveChange(summary = {}) {
+  const usd = toNum(summary.equity_change_last_snapshot_usd);
+  const pct = toNum(summary.equity_change_last_snapshot_pct);
+  const usdText = fmtSignedMoney(usd);
+  const pctText = pct === null ? '--' : fmtSignedPct(pct);
+  return `${usdText} ｜ ${pctText}`;
+}
+
+function fmtDrawdownStat(summary = {}) {
+  const usd = toNum(summary.max_drawdown_usd);
+  const pct = toNum(summary.max_drawdown_pct);
+  const usdText = fmtMoney(usd);
+  const pctText = pct === null ? '--' : fmtPct(pct);
+  return `${usdText} ｜ ${pctText}`;
+}
+
+const MINI_CURVE_LOOKBACK_HOURS = 4;
+const MINI_CURVE_FALLBACK_POINT_LIMIT = 96;
+const FULL_CURVE_POINT_LIMIT = 144;
+
+function normalizeEquitySeries(rows = [], limit = MINI_CURVE_FALLBACK_POINT_LIMIT) {
+  const series = [...rows]
+    .map((row) => ({
+      ts: new Date(row.captured_at_utc || row.captured_at_cst || 0).getTime(),
+      equity: toNum(row.equity_usd)
+    }))
+    .filter((item) => Number.isFinite(item.ts) && item.equity !== null)
+    .sort((a, b) => a.ts - b.ts);
+
+  if (!limit || series.length <= limit) return series;
+  return series.slice(-limit);
+}
+
+function pickRecentSeriesByHours(rows = [], hours = MINI_CURVE_LOOKBACK_HOURS, fallbackLimit = MINI_CURVE_FALLBACK_POINT_LIMIT) {
+  const series = normalizeEquitySeries(rows, 0);
+  if (!series.length) return [];
+  const latestTs = series[series.length - 1].ts;
+  const cutoffTs = latestTs - hours * 60 * 60 * 1000;
+  const recent = series.filter((item) => item.ts >= cutoffTs);
+  if (recent.length) return recent;
+  return series.slice(-fallbackLimit);
+}
+
+function fmtHourMinute(value) {
+  if (!Number.isFinite(value)) return '--';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '--';
+  return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+}
+
+function fmtMonthDayHour(value) {
+  if (!Number.isFinite(value)) return '--';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return '--';
+  return `${dt.getMonth() + 1}/${dt.getDate()} ${String(dt.getHours()).padStart(2, '0')}:00`;
+}
+
+function getAutoTraderCurveSource(strategyId = 'aggregate') {
+  const data = normalizeServerPaperTrader(serverPaperTrader);
+  if (strategyId === 'aggregate') {
+    return {
+      strategyId: 'aggregate',
+      strategyLabel: '多策略合计',
+      subtitle: '服务端自动模拟总收益率曲线',
+      startingEquity: toNum(data.summary?.starting_equity_usd) || 0,
+      rows: data.recent_equity_curve || [],
+      summary: data.summary || {}
+    };
+  }
+  const book = getNormalizedStrategyBooks(data).find((item) => item.strategy_id === strategyId);
+  if (!book) return null;
+  return {
+    strategyId: book.strategy_id,
+    strategyLabel: book.strategy_label,
+    subtitle: `${book.config?.signal_name || '--'} ｜ 全历史收益率曲线`,
+    startingEquity: toNum(book.summary?.starting_equity_usd) || 0,
+    rows: book.recent_equity_curve || [],
+    summary: book.summary || {}
+  };
+}
+
+async function fetchAutoTraderCurveHistory(strategyId = 'aggregate', intervalHours = 4) {
+  const cacheKey = `${strategyId}:${intervalHours}`;
+  if (autoCurveHistoryCache.has(cacheKey)) return autoCurveHistoryCache.get(cacheKey);
+  const payload = await fetchJson(`/api/paper-trader-curve?strategy_id=${encodeURIComponent(strategyId)}&interval_hours=${encodeURIComponent(intervalHours)}`);
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+  autoCurveHistoryCache.set(cacheKey, rows);
+  return rows;
+}
+
+function buildAutoCurveLaunchCard({ strategyId, strategyLabel, summary = {}, subtitle = '' }) {
+  return `
+    <article class="candidate-card auto-config-card auto-book-card">
+      <div class="candidate-main">
+        <div>
+          <div class="candidate-title">${strategyLabel} <span>${subtitle || '收益图入口'}</span></div>
+          <div class="candidate-tags">
+            <span class="pill subtle">当前权益 ${fmtMoney(summary.equity_usd)}</span>
+            <span class="pill subtle">收益 ${fmtSignedMoney((toNum(summary.equity_usd) || 0) - (toNum(summary.starting_equity_usd) || 0))}</span>
+          </div>
+        </div>
+        <div class="candidate-score">
+          <strong>${fmtRatio(summary.win_rate)}</strong>
+          <small>胜率</small>
+        </div>
+      </div>
+      <div class="candidate-meta">
+        <span>最大回撤：${fmtDrawdownStat(summary)}</span>
+        <span>订单量：${getSummaryOrderCount(summary)}</span>
+        <span>已平：${summary.closed_count ?? 0}</span>
+        <span>开仓：${summary.open_count ?? 0}</span>
+      </div>
+      <div class="auto-curve-actions">
+        <button type="button" class="ghost" data-action="open-auto-curve" data-strategy-id="${strategyId}">查看全历史收益图</button>
+        <span class="auto-curve-action-note">全历史 ｜ 每 4 小时一个点</span>
+      </div>
+    </article>
+  `;
+}
+
+function buildAutoCurveViewer(source) {
+  const series = normalizeEquitySeries(source?.rows || [], 0);
+  if (!series.length || !source?.startingEquity) {
+    return '<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">当前没有足够的权益数据，无法生成收益图。</div></article>';
+  }
+
+  const width = 980;
+  const height = 420;
+  const padLeft = 68;
+  const padRight = 18;
+  const padTop = 34;
+  const padBottom = 52;
+  const plotWidth = width - padLeft - padRight;
+  const plotHeight = height - padTop - padBottom;
+  const pointsRaw = series.map((item) => ({
+    ts: item.ts,
+    equity: item.equity,
+    returnPct: ((item.equity - source.startingEquity) / source.startingEquity) * 100
+  }));
+  const latest = pointsRaw[pointsRaw.length - 1];
+  const maxReturn = Math.max(...pointsRaw.map((item) => item.returnPct), 0);
+  const minReturn = Math.min(...pointsRaw.map((item) => item.returnPct), 0);
+  const padPct = Math.max((maxReturn - minReturn) * 0.14, 0.35);
+  const domainMax = maxReturn + padPct;
+  const domainMin = minReturn - padPct;
+  const domainSpan = Math.max(domainMax - domainMin, 0.5);
+  const startTs = pointsRaw[0].ts;
+  const endTs = pointsRaw[pointsRaw.length - 1].ts;
+  const timeSpan = Math.max(endTs - startTs, 1);
+  const toX = (ts) => padLeft + ((ts - startTs) / timeSpan) * plotWidth;
+  const toY = (value) => padTop + ((domainMax - value) / domainSpan) * plotHeight;
+  const svgPoints = pointsRaw.map((item) => ({
+    ...item,
+    x: toX(item.ts),
+    y: toY(item.returnPct)
+  }));
+  const path = svgPoints.map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(2)},${pt.y.toFixed(2)}`).join(' ');
+
+  const yTicks = Array.from({ length: 6 }, (_, idx) => domainMax - (domainSpan / 5) * idx);
+  const hourTicks = [];
+  let tickTs = Math.floor(startTs / (4 * 3600000)) * (4 * 3600000);
+  if (tickTs < startTs) tickTs += 4 * 3600000;
+  while (tickTs <= endTs) {
+    hourTicks.push(tickTs);
+    tickTs += 4 * 3600000;
+  }
+
+  return `
+    <article class="candidate-card curve-viewer-card">
+      <div class="curve-viewer-meta">
+        <span>当前收益率 ${fmtSignedPctCompact(latest.returnPct)}</span>
+        <span>窗口最高 ${fmtSignedPctCompact(maxReturn)}</span>
+        <span>窗口最低 ${fmtSignedPctCompact(minReturn)}</span>
+        <span>起点 ${fmtLocalDateTime(startTs)}</span>
+        <span>终点 ${fmtLocalDateTime(endTs)}</span>
+        <span>${svgPoints.length} 个点 / 4h</span>
+      </div>
+      <svg class="curve-viewer-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${source.strategyLabel} return curve">
+        <text x="${padLeft}" y="20" class="curve-viewer-axis-title">收益率 (%)</text>
+        ${yTicks.map((tick) => `
+          <g>
+            <line x1="${padLeft}" y1="${toY(tick).toFixed(2)}" x2="${(width - padRight).toFixed(2)}" y2="${toY(tick).toFixed(2)}" class="curve-viewer-grid"></line>
+            <text x="${padLeft - 10}" y="${(toY(tick) + 4).toFixed(2)}" text-anchor="end" class="curve-viewer-label">${fmtSignedPctCompact(tick)}</text>
+          </g>
+        `).join('')}
+        ${hourTicks.map((tick) => `
+          <g>
+            <line x1="${toX(tick).toFixed(2)}" y1="${padTop}" x2="${toX(tick).toFixed(2)}" y2="${(height - padBottom).toFixed(2)}" class="curve-viewer-grid"></line>
+            <text x="${toX(tick).toFixed(2)}" y="${(height - 18).toFixed(2)}" text-anchor="middle" class="curve-viewer-label">${fmtMonthDayHour(tick)}</text>
+          </g>
+        `).join('')}
+        <line x1="${padLeft}" y1="${toY(0).toFixed(2)}" x2="${(width - padRight).toFixed(2)}" y2="${toY(0).toFixed(2)}" class="curve-viewer-zero"></line>
+        <line x1="${padLeft}" y1="${padTop}" x2="${padLeft}" y2="${(height - padBottom).toFixed(2)}" class="curve-viewer-axis"></line>
+        <line x1="${padLeft}" y1="${(height - padBottom).toFixed(2)}" x2="${(width - padRight).toFixed(2)}" y2="${(height - padBottom).toFixed(2)}" class="curve-viewer-axis"></line>
+        <path d="${path}" class="curve-viewer-line"></path>
+        ${svgPoints.map((pt) => `<circle cx="${pt.x.toFixed(2)}" cy="${pt.y.toFixed(2)}" r="2.1" class="curve-viewer-dot"></circle>`).join('')}
+      </svg>
+    </article>
+  `;
+}
+
+async function openAutoCurveModal(strategyId = 'aggregate') {
+  const source = getAutoTraderCurveSource(strategyId);
+  if (!source) return;
+  const modal = el('autoCurveModal');
+  const title = el('autoCurveModalTitle');
+  const subtitle = el('autoCurveModalSubtitle');
+  const body = el('autoCurveModalBody');
+  if (!modal || !title || !subtitle || !body) return;
+
+  openAutoCurveStrategyId = strategyId;
+  title.textContent = `${source.strategyLabel} ｜ 全历史收益率曲线`;
+  subtitle.textContent = `${source.subtitle} ｜ 全历史数据按 4 小时采样一个点`;
+  body.innerHTML = '<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">加载历史收益曲线中…</div></article>';
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
+
+  try {
+    const rows = await fetchAutoTraderCurveHistory(strategyId, 4);
+    if (openAutoCurveStrategyId !== strategyId) return;
+    body.innerHTML = buildAutoCurveViewer({ ...source, rows });
+  } catch (err) {
+    if (openAutoCurveStrategyId !== strategyId) return;
+    body.innerHTML = `<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">加载历史收益曲线失败：${err.message}</div></article>`;
+  }
+}
+
+function closeAutoCurveModal() {
+  const modal = el('autoCurveModal');
+  const body = el('autoCurveModalBody');
+  if (body) body.innerHTML = '';
+  if (modal) {
+    modal.classList.remove('is-open');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+  document.body.classList.remove('modal-open');
+  openAutoCurveStrategyId = null;
+}
+
+async function openLiveCurveModal() {
+  const data = normalizeLiveTraderTestnet(liveTraderTestnet);
+  const modal = el('autoCurveModal');
+  const title = el('autoCurveModalTitle');
+  const subtitle = el('autoCurveModalSubtitle');
+  const body = el('autoCurveModalBody');
+  if (!modal || !title || !subtitle || !body) return;
+
+  openAutoCurveStrategyId = 'live:testnet';
+  title.textContent = '测试网实盘 ｜ 全历史资金曲线';
+  subtitle.textContent = '全历史数据按 4 小时采样一个点';
+  body.innerHTML = '<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">加载测试网历史资金曲线中…</div></article>';
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
+
+  try {
+    const rows = await fetchLiveTraderCurveHistory(4);
+    if (openAutoCurveStrategyId !== 'live:testnet') return;
+    body.innerHTML = buildAutoCurveViewer({
+      strategyLabel: '测试网实盘',
+      startingEquity: data.starting_capital_usd,
+      rows,
+    });
+  } catch (err) {
+    if (openAutoCurveStrategyId !== 'live:testnet') return;
+    body.innerHTML = `<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">加载测试网历史资金曲线失败：${err.message}</div></article>`;
+  }
+}
+
+function buildEquitySparkline(rows = [], startingEquity = 0) {
+  const series = normalizeEquitySeries(rows, FULL_CURVE_POINT_LIMIT);
+
+  if (!series.length) return '';
+
+  const width = 320;
+  const height = 92;
+  const padX = 8;
+  const padY = 8;
+  const values = series.map((item) => item.equity);
+  const min = Math.min(...values, startingEquity || values[0]);
+  const max = Math.max(...values, startingEquity || values[0]);
+  const range = Math.max(max - min, Math.abs(max) * 0.01, 1);
+  const stepX = series.length > 1 ? (width - padX * 2) / (series.length - 1) : 0;
+  const toY = (value) => height - padY - ((value - min) / range) * (height - padY * 2);
+  const points = series.map((item, idx) => ({
+    x: padX + stepX * idx,
+    y: toY(item.equity),
+    equity: item.equity
+  }));
+  const path = points.map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(2)},${pt.y.toFixed(2)}`).join(' ');
+  const area = `${path} L${points[points.length - 1].x.toFixed(2)},${(height - padY).toFixed(2)} L${points[0].x.toFixed(2)},${(height - padY).toFixed(2)} Z`;
+  const latest = points[points.length - 1];
+  const toneClass = ((latest?.equity || 0) - (startingEquity || 0)) >= 0 ? 'up' : 'down';
+  const gradientId = `equitySparkFill-${Math.abs(Math.round((latest?.equity || 0) * 100))}-${series.length}-${Math.abs(Math.round(series[0]?.ts || 0))}`;
+
+  return `
+    <article class="candidate-card equity-sparkline-card">
+      <div class="equity-sparkline-head">
+        <div>
+          <strong class="${toneClass}">${fmtMoney(latest?.equity)}</strong>
+          <small>最新权益 ｜ 相对本金 ${fmtSignedMoney((latest?.equity || 0) - (startingEquity || 0))}</small>
+        </div>
+        <div class="equity-sparkline-meta">
+          <span>起点 ${fmtMoney(startingEquity)}</span>
+          <span>高点 ${fmtMoney(Math.max(...values))}</span>
+          <span>点数 ${series.length}</span>
+        </div>
+      </div>
+      <svg class="equity-sparkline-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="equity sparkline">
+        <defs>
+          <linearGradient id="${gradientId}" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="rgba(79,140,255,0.35)"></stop>
+            <stop offset="100%" stop-color="rgba(79,140,255,0.02)"></stop>
+          </linearGradient>
+        </defs>
+        <line x1="${padX}" y1="${toY(startingEquity || values[0])}" x2="${width - padX}" y2="${toY(startingEquity || values[0])}" class="equity-sparkline-baseline"></line>
+        <path d="${area}" fill="url(#${gradientId})" class="equity-sparkline-area"></path>
+        <path d="${path}" fill="none" class="equity-sparkline-line ${toneClass}"></path>
+        <circle cx="${latest.x.toFixed(2)}" cy="${latest.y.toFixed(2)}" r="3.5" class="equity-sparkline-dot ${toneClass}"></circle>
+      </svg>
+    </article>
+  `;
+}
+
+function buildEquitySparklineMini(rows = [], startingEquity = 0) {
+  const series = pickRecentSeriesByHours(rows, MINI_CURVE_LOOKBACK_HOURS, MINI_CURVE_FALLBACK_POINT_LIMIT);
+
+  if (!series.length) {
+    return '<div class="auto-book-sparkline-empty">暂无权益曲线数据</div>';
+  }
+
+  const width = 360;
+  const height = 112;
+  const padX = 8;
+  const padY = 10;
+  const pnls = series.map((item) => item.equity - startingEquity);
+  const minPnl = Math.min(...pnls, 0);
+  const maxPnl = Math.max(...pnls, 0);
+  const maxAbs = Math.max(Math.abs(minPnl), Math.abs(maxPnl), Math.max(Math.abs(startingEquity) * 0.002, 1));
+  const stepX = series.length > 1 ? (width - padX * 2) / (series.length - 1) : 0;
+  const toY = (value) => height - padY - ((value + maxAbs) / (maxAbs * 2)) * (height - padY * 2);
+  const points = series.map((item, idx) => ({
+    x: padX + stepX * idx,
+    y: toY(item.equity - startingEquity),
+    equity: item.equity,
+    pnl: item.equity - startingEquity
+  }));
+  const path = points.map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(2)},${pt.y.toFixed(2)}`).join(' ');
+  const baselineY = toY(0);
+  const guideUpperY = toY(maxAbs * 0.5);
+  const guideLowerY = toY(-maxAbs * 0.5);
+  const area = `${path} L${points[points.length - 1].x.toFixed(2)},${baselineY.toFixed(2)} L${points[0].x.toFixed(2)},${baselineY.toFixed(2)} Z`;
+  const latest = points[points.length - 1];
+  const latestPnl = latest?.pnl || 0;
+  const latestEquity = latest?.equity || startingEquity;
+  const peakPnl = Math.max(...pnls, 0);
+  const troughPnl = Math.min(...pnls, 0);
+  const pnlRange = peakPnl - troughPnl;
+  const toneClass = latestPnl >= 0 ? 'up' : 'down';
+  const baseId = `equitySparkMini-${Math.abs(Math.round(latestEquity * 100))}-${series.length}-${Math.abs(Math.round(series[0]?.ts || 0))}`;
+  const posGradientId = `${baseId}-pos`;
+  const negGradientId = `${baseId}-neg`;
+  const posClipId = `${baseId}-clip-pos`;
+  const negClipId = `${baseId}-clip-neg`;
+  const startTs = series[0]?.ts;
+  const endTs = series[series.length - 1]?.ts;
+
+  return `
+    <div class="auto-book-sparkline">
+      <div class="auto-book-sparkline-head">
+        <div>
+          <strong class="${toneClass}">${fmtSignedMoney(latestPnl)}</strong>
+          <small>近 ${MINI_CURVE_LOOKBACK_HOURS} 小时收益曲线 ｜ 当前权益 ${fmtMoney(latestEquity)}</small>
+        </div>
+        <div class="auto-book-sparkline-axis-note">本金线 ${fmtMoney(startingEquity)}</div>
+      </div>
+      <div class="auto-book-sparkline-meta">
+        <span>窗口最高收益 ${fmtSignedMoney(peakPnl)}</span>
+        <span>窗口最低收益 ${fmtSignedMoney(troughPnl)}</span>
+        <span>窗口振幅 ${fmtMoney(pnlRange)}</span>
+        <span>${fmtHourMinute(startTs)} → ${fmtHourMinute(endTs)}</span>
+        <span>${series.length} 点 / 5m</span>
+      </div>
+      <svg class="auto-book-sparkline-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="strategy pnl curve">
+        <defs>
+          <linearGradient id="${posGradientId}" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="rgba(52,211,153,0.42)"></stop>
+            <stop offset="100%" stop-color="rgba(52,211,153,0.04)"></stop>
+          </linearGradient>
+          <linearGradient id="${negGradientId}" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="rgba(248,113,113,0.06)"></stop>
+            <stop offset="100%" stop-color="rgba(248,113,113,0.38)"></stop>
+          </linearGradient>
+          <clipPath id="${posClipId}">
+            <rect x="0" y="0" width="${width}" height="${baselineY.toFixed(2)}"></rect>
+          </clipPath>
+          <clipPath id="${negClipId}">
+            <rect x="0" y="${baselineY.toFixed(2)}" width="${width}" height="${Math.max(height - baselineY, 0).toFixed(2)}"></rect>
+          </clipPath>
+        </defs>
+        <line x1="${padX}" y1="${guideUpperY.toFixed(2)}" x2="${width - padX}" y2="${guideUpperY.toFixed(2)}" class="equity-sparkline-guide"></line>
+        <line x1="${padX}" y1="${baselineY.toFixed(2)}" x2="${width - padX}" y2="${baselineY.toFixed(2)}" class="equity-sparkline-axis"></line>
+        <line x1="${padX}" y1="${guideLowerY.toFixed(2)}" x2="${width - padX}" y2="${guideLowerY.toFixed(2)}" class="equity-sparkline-guide"></line>
+        <text x="${width - padX}" y="${(guideUpperY - 4).toFixed(2)}" text-anchor="end" class="equity-sparkline-scale up">${fmtSignedMoney(maxAbs * 0.5)}</text>
+        <text x="${width - padX}" y="${(baselineY - 4).toFixed(2)}" text-anchor="end" class="equity-sparkline-scale">${fmtSignedMoney(0)}</text>
+        <text x="${width - padX}" y="${(guideLowerY - 4).toFixed(2)}" text-anchor="end" class="equity-sparkline-scale down">${fmtSignedMoney(maxAbs * -0.5)}</text>
+        <path d="${area}" fill="url(#${posGradientId})" clip-path="url(#${posClipId})" class="equity-pnl-area-positive"></path>
+        <path d="${area}" fill="url(#${negGradientId})" clip-path="url(#${negClipId})" class="equity-pnl-area-negative"></path>
+        <path d="${path}" fill="none" class="equity-sparkline-line ${toneClass}"></path>
+        <circle cx="${latest.x.toFixed(2)}" cy="${latest.y.toFixed(2)}" r="3" class="equity-sparkline-dot ${toneClass}"></circle>
+      </svg>
+      <div class="auto-book-sparkline-foot">
+        <span>${fmtHourMinute(startTs)}</span>
+        <span class="up">上方 = 盈利 / 下方 = 亏损</span>
+        <span>${fmtHourMinute(endTs)}</span>
+      </div>
+    </div>
+  `;
 }
 
 function emptyServerPaperTrader() {
@@ -949,10 +1423,22 @@ function emptyLiveTraderTestnet() {
       unrealized_pnl_usd: 0,
       roi_pct: 0,
       open_count: 0,
+      closed_count: 0,
+      total_order_count: 0,
+      win_count: 0,
+      loss_count: 0,
+      win_rate: null,
+      equity_peak_usd: DEFAULT_LIVE_TRADER_CAPITAL_USD,
+      max_drawdown_usd: 0,
+      max_drawdown_pct: null,
+      equity_change_last_snapshot_usd: 0,
+      equity_change_last_snapshot_pct: 0,
+      curve_point_count: 0,
       recent_event_count: 0
     },
     positions: [],
     recent_events: [],
+    recent_equity_curve: [],
     runtime: {
       candidate_count: null,
       candidate_preview: [],
@@ -994,10 +1480,22 @@ function normalizeLiveTraderTestnet(payload) {
       unrealized_pnl_usd: toNum(summary.unrealized_pnl_usd) ?? 0,
       roi_pct: toNum(summary.roi_pct) ?? 0,
       open_count: Math.round(toNum(summary.open_count) ?? positions.length),
+      closed_count: Math.round(toNum(summary.closed_count) ?? 0),
+      total_order_count: Math.round(toNum(summary.total_order_count) ?? 0),
+      win_count: Math.round(toNum(summary.win_count) ?? 0),
+      loss_count: Math.round(toNum(summary.loss_count) ?? 0),
+      win_rate: toNum(summary.win_rate),
+      equity_peak_usd: toNum(summary.equity_peak_usd),
+      max_drawdown_usd: toNum(summary.max_drawdown_usd) ?? 0,
+      max_drawdown_pct: toNum(summary.max_drawdown_pct),
+      equity_change_last_snapshot_usd: toNum(summary.equity_change_last_snapshot_usd) ?? 0,
+      equity_change_last_snapshot_pct: toNum(summary.equity_change_last_snapshot_pct),
+      curve_point_count: Math.round(toNum(summary.curve_point_count) ?? 0),
       recent_event_count: Math.round(toNum(summary.recent_event_count) ?? recentEvents.length)
     },
     positions,
     recent_events: recentEvents,
+    recent_equity_curve: Array.isArray(payload.recent_equity_curve) ? payload.recent_equity_curve.map((item) => ({ ...item })) : [],
     runtime: {
       ...base.runtime,
       ...(payload.runtime || {}),
@@ -1008,6 +1506,15 @@ function normalizeLiveTraderTestnet(payload) {
       failed: Array.isArray(payload.runtime?.failed) ? payload.runtime.failed.map((item) => ({ ...item })) : []
     }
   };
+}
+
+async function fetchLiveTraderCurveHistory(intervalHours = 4) {
+  const cacheKey = String(intervalHours);
+  if (liveCurveHistoryCache.has(cacheKey)) return liveCurveHistoryCache.get(cacheKey);
+  const payload = await fetchJson(`/api/live-trader-testnet-curve?interval_hours=${encodeURIComponent(intervalHours)}`);
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+  liveCurveHistoryCache.set(cacheKey, rows);
+  return rows;
 }
 
 function getNormalizedStrategyBooks(data = normalizeServerPaperTrader(serverPaperTrader)) {
@@ -1677,6 +2184,8 @@ async function loadDashboard() {
     allRows = latestData.rows || [];
     serverPaperTrader = normalizeServerPaperTrader(paperTraderData.paper_trader);
     liveTraderTestnet = normalizeLiveTraderTestnet(liveTraderData.live_trader_testnet);
+    autoCurveHistoryCache.clear();
+    liveCurveHistoryCache.clear();
     syncPaperPositions();
     renderMeta(latestManifest, allRows);
     renderSnapshotOptions(snapshotsData.snapshots || [], latestManifest.latest_snapshot_id);
@@ -1692,6 +2201,11 @@ async function loadDashboard() {
     renderAutoTraderConfigSummary();
     renderAutoTraderOrderList();
     renderAutoTraderCurveList();
+    if (openAutoCurveStrategyId === 'live:testnet') {
+      openLiveCurveModal();
+    } else if (openAutoCurveStrategyId) {
+      openAutoCurveModal(openAutoCurveStrategyId);
+    }
     el('statusText').textContent = `已加载 ${allRows.length} 条分析记录`;
   } catch (err) {
     console.error(err);
@@ -2292,8 +2806,11 @@ function renderAutoTraderSummary() {
     ['多策略总权益', fmtMoney(summary.equity_usd)],
     ['已实现盈亏', fmtSignedMoney(summary.realized_pnl_usd)],
     ['未实现盈亏', fmtSignedMoney(summary.unrealized_pnl_usd)],
+    ['上一跳变化', fmtCurveChange(summary)],
+    ['最大回撤', fmtDrawdownStat(summary)],
     ['开仓中', summary.open_count ?? 0],
     ['已平仓', summary.closed_count ?? 0],
+    ['订单量', getSummaryOrderCount(summary)],
     ['胜率', fmtRatio(summary.win_rate)],
     ['当前总敞口', `${fmtMoney(summary.open_gross_usd)} / ${fmtMoney(summary.gross_cap_usd)}`],
     ['累计实现R', fmtSignedNum(summary.total_realized_r)]
@@ -2308,7 +2825,7 @@ function renderAutoTraderSummary() {
     <article class="paper-stat-card auto-stat-card auto-layer-stat-card">
       <span>${book.strategy_label}</span>
       <strong>${fmtMoney(book.summary?.equity_usd)}</strong>
-      <small class="auto-layer-micro">胜率 ${fmtRatio(book.summary?.win_rate)} ｜ 已平 ${book.summary?.closed_count ?? 0} ｜ 开仓 ${book.summary?.open_count ?? 0}</small>
+      <small class="auto-layer-micro">曲线 ${fmtCurveChange(book.summary)} ｜ 回撤 ${fmtPct(book.summary?.max_drawdown_pct)} ｜ 订单 ${getSummaryOrderCount(book.summary)} ｜ 胜率 ${fmtRatio(book.summary?.win_rate)}</small>
     </article>
   `).join('');
   wrap.innerHTML = `${aggregateCards}${layerCards}`;
@@ -2350,6 +2867,10 @@ function renderAutoTraderConfigSummary() {
         <span>最长持有：${fmtHours(config.max_hold_hours)}</span>
         <span>结构止损窗：${fmtPct(config.stop_window_min_pct)} ~ ${fmtPct(config.stop_window_max_pct)}</span>
       </div>
+      <div class="auto-curve-actions">
+        <button type="button" class="ghost" data-action="open-auto-curve" data-strategy-id="aggregate">查看多策略全历史收益图</button>
+        <span class="auto-curve-action-note">默认不渲染图，按需加载全历史 4h 采样图</span>
+      </div>
       <div class="candidate-evidence-inline">当前页面只读展示服务器自动执行结果。实际开平仓决策由采集器落盘后立即调用服务端模拟引擎完成，不依赖浏览器本地状态。</div>
     </article>
     ${books.map((book) => `
@@ -2369,12 +2890,19 @@ function renderAutoTraderConfigSummary() {
         </div>
         <div class="candidate-meta">
           <span>当前权益：${fmtMoney(book.summary?.equity_usd)}</span>
+          <span>上一跳：${fmtCurveChange(book.summary)}</span>
+          <span>最大回撤：${fmtDrawdownStat(book.summary)}</span>
+          <span>订单量：${getSummaryOrderCount(book.summary)}</span>
           <span>胜率：${fmtRatio(book.summary?.win_rate)}</span>
           <span>已平：${book.summary?.closed_count ?? 0}</span>
           <span>开仓：${book.summary?.open_count ?? 0}</span>
           <span>已实现：${fmtSignedMoney(book.summary?.realized_pnl_usd)}</span>
           <span>未实现：${fmtSignedMoney(book.summary?.unrealized_pnl_usd)}</span>
           <span>累计R：${fmtSignedNum(book.summary?.total_realized_r)}</span>
+        </div>
+        <div class="auto-curve-actions">
+          <button type="button" class="ghost" data-action="open-auto-curve" data-strategy-id="${book.strategy_id}">查看全历史收益图</button>
+          <span class="auto-curve-action-note">全历史 ｜ 每 4 小时一个点</span>
         </div>
         <div class="candidate-evidence-inline">${book.description || '影子规则与正式规则并行运行，用于比较哪一层更适合做主策略。'}</div>
       </article>
@@ -2460,7 +2988,7 @@ function renderAutoTraderOrderList() {
       <section class="auto-book-section">
         <div class="section-mini-head">
           <h3>${book.strategy_label}</h3>
-          <p>开仓 ${book.summary?.open_count ?? 0} ｜ 已平 ${book.summary?.closed_count ?? 0} ｜ 胜率 ${fmtRatio(book.summary?.win_rate)}</p>
+          <p>开仓 ${book.summary?.open_count ?? 0} ｜ 已平 ${book.summary?.closed_count ?? 0} ｜ 订单 ${getSummaryOrderCount(book.summary)} ｜ 胜率 ${fmtRatio(book.summary?.win_rate)} ｜ 回撤 ${fmtPct(book.summary?.max_drawdown_pct)}</p>
         </div>
         <div class="candidate-list">
           ${list.map((order) => autoOrderCard(order)).join('')}
@@ -2478,65 +3006,20 @@ function renderAutoTraderCurveList() {
   if (!wrap) return;
   const data = normalizeServerPaperTrader(serverPaperTrader);
   const books = getNormalizedStrategyBooks(data);
-
-  const renderCurveRows = (rows, startingEquity) => rows.length
-    ? rows.map((row) => {
-      const equityUsd = toNum(row.equity_usd);
-      const pnlUsd = equityUsd !== null ? equityUsd - startingEquity : null;
-      const toneClass = (pnlUsd || 0) >= 0 ? 'up' : 'down';
-      return `
-        <article class="candidate-card equity-curve-card">
-          <div class="candidate-main">
-            <div>
-              <div class="candidate-title">${row.snapshot_id || '--'} <span>${fmtSnapshotTime(row.captured_at_cst, row.captured_at_utc)}</span></div>
-              <div class="candidate-tags">
-                <span class="pill subtle">开仓 ${row.open_count ?? 0}</span>
-                <span class="pill subtle">已平 ${row.closed_count ?? 0}</span>
-                <span class="pill subtle">胜 ${row.win_count ?? 0} / 负 ${row.loss_count ?? 0}</span>
-              </div>
-            </div>
-            <div class="candidate-score">
-              <strong class="${toneClass}">${fmtMoney(equityUsd)}</strong>
-              <small>${fmtSignedMoney(pnlUsd)}</small>
-            </div>
-          </div>
-          <div class="curve-metric-row">
-            <span>已实现 ${fmtSignedMoney(row.realized_pnl_usd)}</span>
-            <span>未实现 ${fmtSignedMoney(row.unrealized_pnl_usd)}</span>
-          </div>
-        </article>
-      `;
-    }).join('')
-    : '<article class="candidate-card empty-card"><div class="candidate-title">权益曲线尚未生成</div><div class="candidate-evidence-inline">首个服务端快照完成后，这里会按 5 分钟粒度显示账户权益、已实现盈亏和未实现盈亏。</div></article>';
-
-  const sections = [];
-  const aggregateRows = [...(data.recent_equity_curve || [])]
-    .sort((a, b) => new Date(b.captured_at_utc || 0) - new Date(a.captured_at_utc || 0))
-    .slice(0, 6);
-  sections.push(`
-    <section class="auto-book-section">
-      <div class="section-mini-head">
-        <h3>多策略合计</h3>
-        <p>总权益 ${fmtMoney(data.summary?.equity_usd)} ｜ 胜率 ${fmtRatio(data.summary?.win_rate)}</p>
-      </div>
-      <div class="candidate-list">${renderCurveRows(aggregateRows, toNum(data.summary?.starting_equity_usd) || 40000)}</div>
-    </section>
-  `);
-  books.forEach((book) => {
-    const rows = [...(book.recent_equity_curve || [])]
-      .sort((a, b) => new Date(b.captured_at_utc || 0) - new Date(a.captured_at_utc || 0))
-      .slice(0, 4);
-    sections.push(`
-      <section class="auto-book-section">
-        <div class="section-mini-head">
-          <h3>${book.strategy_label}</h3>
-          <p>当前权益 ${fmtMoney(book.summary?.equity_usd)} ｜ 已平 ${book.summary?.closed_count ?? 0}</p>
-        </div>
-        <div class="candidate-list">${renderCurveRows(rows, toNum(book.summary?.starting_equity_usd) || 10000)}</div>
-      </section>
-    `);
-  });
-  wrap.innerHTML = sections.join('');
+  wrap.innerHTML = [
+    buildAutoCurveLaunchCard({
+      strategyId: 'aggregate',
+      strategyLabel: '多策略合计',
+      summary: data.summary || {},
+      subtitle: '服务端自动模拟总账户'
+    }),
+    ...books.map((book) => buildAutoCurveLaunchCard({
+      strategyId: book.strategy_id,
+      strategyLabel: book.strategy_label,
+      summary: book.summary || {},
+      subtitle: book.config?.signal_name || '--'
+    }))
+  ].join('');
 }
 
 function fmtLiveEventType(value) {
@@ -2568,6 +3051,10 @@ function renderLiveTraderSummary() {
     ['已实现盈亏', fmtSignedMoney(data.summary?.realized_pnl_usd)],
     ['未实现盈亏', fmtSignedMoney(data.summary?.unrealized_pnl_usd)],
     ['当前持仓', data.summary?.open_count ?? 0],
+    ['已平仓', data.summary?.closed_count ?? 0],
+    ['订单量', getSummaryOrderCount(data.summary)],
+    ['胜率', fmtRatio(data.summary?.win_rate)],
+    ['最大回撤', fmtDrawdownStat(data.summary)],
     ['可用余额', fmtMoney(data.account?.available_balance_usd)],
     ['当前敞口', `${fmtMoney(data.account?.open_gross_usd)} / ${fmtMoney(data.account?.gross_cap_usd)}`]
   ];
@@ -2607,9 +3094,17 @@ function renderLiveTraderSummary() {
         <div class="candidate-meta">
           <span>最新快照：${data.snapshot_id || '--'}</span>
           <span>起始资金：${fmtMoney(data.starting_capital_usd)}</span>
+          <span>已平：${data.summary?.closed_count ?? 0}</span>
+          <span>订单量：${getSummaryOrderCount(data.summary)}</span>
+          <span>胜率：${fmtRatio(data.summary?.win_rate)}</span>
+          <span>最大回撤：${fmtDrawdownStat(data.summary)}</span>
           <span>最近开仓：${(data.runtime?.opened || []).length}</span>
           <span>最近平仓：${(data.runtime?.closed || []).length}</span>
           <span>最近失败：${(data.runtime?.failed || []).length}</span>
+        </div>
+        <div class="auto-curve-actions">
+          <button type="button" class="ghost" data-action="open-live-curve">查看测试网全历史资金曲线</button>
+          <span class="auto-curve-action-note">全历史 ｜ 每 4 小时一个点</span>
         </div>
         <div class="candidate-evidence-inline">${preview.length ? `候选预览：${preview.map((item) => `${item.symbol || '--'} / Q=${fmtNum(item.quality_score)} / 止损=${fmtPct(item.structure_stop_pct)}`).join(' ｜ ')}` : '当前没有新的候选预览或本轮尚未同步。'}</div>
       </article>
@@ -2874,6 +3369,21 @@ function bindEvents() {
     });
   }
   document.addEventListener('click', (event) => {
+    const curveOpenBtn = event.target.closest('[data-action="open-auto-curve"]');
+    if (curveOpenBtn) {
+      openAutoCurveModal(curveOpenBtn.dataset.strategyId || 'aggregate');
+      return;
+    }
+    const liveCurveOpenBtn = event.target.closest('[data-action="open-live-curve"]');
+    if (liveCurveOpenBtn) {
+      openLiveCurveModal();
+      return;
+    }
+    const curveCloseBtn = event.target.closest('[data-action="close-auto-curve"]');
+    if (curveCloseBtn) {
+      closeAutoCurveModal();
+      return;
+    }
     const openBtn = event.target.closest('[data-action="open-short"]');
     if (openBtn) {
       openShortPosition(openBtn.dataset.symbol);
@@ -2883,6 +3393,9 @@ function bindEvents() {
     if (closeBtn) {
       closeShortPosition(closeBtn.dataset.positionId);
     }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && openAutoCurveStrategyId) closeAutoCurveModal();
   });
 }
 
