@@ -1,0 +1,46 @@
+{
+  "account_id": "mainnet_cxx_alpha",
+  "enabled": false,
+  "account_label": "Binance Mainnet / Alpha",
+  "binance": {
+    "api_key_env": "BINANCE_MAINNET_ALPHA_API_KEY",
+    "api_secret_env": "BINANCE_MAINNET_ALPHA_API_SECRET",
+    "base_url": "https://fapi.binance.com",
+    "recv_window": 5000,
+    "timeout_ms": 10000,
+    "retries": 3,
+    "backoff_ms": 1000,
+    "working_type": "MARK_PRICE",
+    "price_protect": false,
+    "ensure_one_way_mode": true,
+    "set_symbol_leverage": true
+  },
+  "strategy": {
+    "strategy_id": "C_overheat_fade_wide_hold",
+    "max_concurrent": 3,
+    "exit_on_signal_loss": true,
+    "recreate_protection_if_missing": true,
+    "block_on_orphan_positions": true,
+    "allow_symbols": [],
+    "block_symbols": []
+  },
+  "risk": {
+    "use_exchange_margin_balance": true,
+    "fallback_equity_usd": 1000.0,
+    "risk_pct": 2.0,
+    "max_gross_pct": 200.0,
+    "leverage": 2.0,
+    "margin_buffer_pct": 95.0,
+    "min_notional_usd": 20.0
+  },
+  "execution": {
+    "validate_entry_with_test_order": false,
+    "cancel_all_symbol_algo_orders_on_exit": true,
+    "entry_retry_shrink_pct": 97.0,
+    "max_entry_retries": 6
+  },
+  "reporting": {
+    "starting_capital_usd": 1000.0,
+    "recent_event_limit": 40
+  }
+}

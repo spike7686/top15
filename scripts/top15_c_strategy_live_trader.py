@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import contextlib
+import csv
 import fcntl
 import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from pathlib import Path
 
@@ -31,13 +32,16 @@ DATA_DIR = WORKDIR / "data" / "top15_tracker"
 LATEST_DIR = DATA_DIR / "latest"
 DEFAULT_CONFIG_PATH = WORKDIR / "config" / "binance_c_strategy.testnet.json"
 EXAMPLE_CONFIG_PATH = WORKDIR / "config" / "binance_c_strategy.testnet.example.json"
+LIVE_TRADER_ACCOUNTS_DIR = DATA_DIR / "live_trader" / "accounts"
 LIVE_TRADER_DIR = DATA_DIR / "live_trader" / "c_strategy_testnet"
 STATE_PATH = LIVE_TRADER_DIR / "state.json"
 JOURNAL_PATH = LIVE_TRADER_DIR / "journal.jsonl"
 LATEST_PATH = LIVE_TRADER_DIR / "latest.json"
 LOCK_PATH = LIVE_TRADER_DIR / ".lock"
+EQUITY_CURVE_CSV_PATH = LIVE_TRADER_DIR / "equity_curve.csv"
 
 LIVE_TRADER_DIR.mkdir(parents=True, exist_ok=True)
+LIVE_TRADER_ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def safe_float(value):
@@ -127,8 +131,58 @@ def deep_merge(base, patch):
     return out
 
 
+def slugify_account_id(value):
+    text = str(value or "").strip().lower()
+    chars = []
+    for char in text:
+        if char.isalnum():
+            chars.append(char)
+        elif char in {"-", "_", "."}:
+            chars.append("-")
+    slug = "".join(chars).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "default"
+
+
+def resolve_account_id(config, config_path: Path):
+    explicit = config.get("account_id") or config.get("runtime_dirname")
+    if explicit:
+        return slugify_account_id(explicit)
+    if config_path.name == DEFAULT_CONFIG_PATH.name:
+        return "c_strategy_testnet"
+    return slugify_account_id(config_path.stem)
+
+
+def configure_runtime_paths(config, config_path: Path):
+    global LIVE_TRADER_DIR, STATE_PATH, JOURNAL_PATH, LATEST_PATH, LOCK_PATH, EQUITY_CURVE_CSV_PATH
+    account_id = resolve_account_id(config, config_path)
+    runtime_dir = (
+        DATA_DIR / "live_trader" / "c_strategy_testnet"
+        if account_id == "c_strategy_testnet"
+        else LIVE_TRADER_ACCOUNTS_DIR / account_id
+    )
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    LIVE_TRADER_DIR = runtime_dir
+    STATE_PATH = runtime_dir / "state.json"
+    JOURNAL_PATH = runtime_dir / "journal.jsonl"
+    LATEST_PATH = runtime_dir / "latest.json"
+    LOCK_PATH = runtime_dir / ".lock"
+    EQUITY_CURVE_CSV_PATH = runtime_dir / "equity_curve.csv"
+    config["account_id"] = account_id
+    return runtime_dir
+
+
+def iso_to_cst(value):
+    dt = parse_dt(value)
+    if not dt:
+        return None
+    return dt.astimezone(timezone(timedelta(hours=8))).isoformat()
+
+
 def default_config():
     return {
+        "account_id": None,
         "enabled": False,
         "account_label": "binance_c_strategy_testnet",
         "binance": {
@@ -193,6 +247,13 @@ def normalize_symbol_list(values):
     return seen
 
 
+def config_has_api_credentials(config):
+    binance_cfg = (config or {}).get("binance") or {}
+    api_key_env = binance_cfg.get("api_key_env") or ""
+    api_secret_env = binance_cfg.get("api_secret_env") or ""
+    return bool(os.environ.get(api_key_env, "") and os.environ.get(api_secret_env, ""))
+
+
 def apply_runtime_overrides(config, args):
     if getattr(args, "allow_symbol", None):
         config["strategy"]["allow_symbols"] = normalize_symbol_list([args.allow_symbol])
@@ -237,6 +298,35 @@ def load_state():
 
 def save_state(state):
     write_json(STATE_PATH, state)
+
+
+def append_equity_curve_row(config, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    summary = payload.get("summary") or {}
+    account = payload.get("account") or {}
+    equity_usd = safe_float(summary.get("equity_usd")) or safe_float(account.get("equity_usd"))
+    if equity_usd is None:
+        return
+    row = {
+        "captured_at_utc": payload.get("last_run_at") or now_utc_iso(),
+        "captured_at_cst": iso_to_cst(payload.get("last_run_at") or now_utc_iso()),
+        "snapshot_id": payload.get("snapshot_id"),
+        "account_id": config.get("account_id"),
+        "account_label": payload.get("account_label") or config.get("account_label"),
+        "strategy_id": payload.get("strategy_id") or ((config.get("strategy") or {}).get("strategy_id")),
+        "equity_usd": equity_usd,
+        "realized_pnl_usd": safe_float(summary.get("realized_pnl_usd")),
+        "unrealized_pnl_usd": safe_float(summary.get("unrealized_pnl_usd")),
+        "open_count": int(safe_float(summary.get("open_count")) or 0),
+    }
+    fieldnames = list(row.keys())
+    EQUITY_CURVE_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not EQUITY_CURVE_CSV_PATH.exists()
+    with EQUITY_CURVE_CSV_PATH.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def load_latest_snapshot():
@@ -674,6 +764,7 @@ def build_live_trader_payload(config, state, snapshot_id, runtime, summary):
     return {
         "ok": True,
         "version": (state or {}).get("version") or "c_strategy_testnet_v1",
+        "account_id": config.get("account_id"),
         "account_label": config.get("account_label") or "binance_c_strategy_testnet",
         "strategy_id": ((config.get("strategy") or {}).get("strategy_id")) or "C_overheat_fade",
         "enabled": bool(config.get("enabled")),
@@ -707,6 +798,67 @@ def build_live_trader_payload(config, state, snapshot_id, runtime, summary):
             "failed": summary.get("failed") or [],
         },
     }
+
+
+def build_disabled_stale_payload(config, state, snapshot_id, summary, previous_payload=None):
+    previous_payload = previous_payload if isinstance(previous_payload, dict) else {}
+    runtime_prev = previous_payload.get("runtime") or {}
+    summary_prev = previous_payload.get("summary") if isinstance(previous_payload.get("summary"), dict) else {}
+    account_prev = previous_payload.get("account") if isinstance(previous_payload.get("account"), dict) else {}
+    warnings = list(runtime_prev.get("warnings") or [])
+    for item in summary.get("warnings") or []:
+        if item not in warnings:
+            warnings.append(item)
+    starting_capital_usd = safe_float(((config.get("reporting") or {}).get("starting_capital_usd"))) or safe_float(previous_payload.get("starting_capital_usd")) or 4941.0
+    payload = {
+        **previous_payload,
+        "ok": True,
+        "version": previous_payload.get("version") or (state or {}).get("version") or "c_strategy_testnet_v1",
+        "account_id": config.get("account_id"),
+        "account_label": config.get("account_label") or previous_payload.get("account_label") or "binance_c_strategy_testnet",
+        "strategy_id": ((config.get("strategy") or {}).get("strategy_id")) or previous_payload.get("strategy_id") or "C_overheat_fade",
+        "enabled": False,
+        "snapshot_id": snapshot_id,
+        "last_run_at": (state or {}).get("last_run_at"),
+        "starting_capital_usd": starting_capital_usd,
+        "account": {
+            "equity_usd": safe_float(account_prev.get("equity_usd")),
+            "available_balance_usd": safe_float(account_prev.get("available_balance_usd")),
+            "open_gross_usd": safe_float(account_prev.get("open_gross_usd")),
+            "gross_cap_usd": safe_float(account_prev.get("gross_cap_usd")),
+        },
+        "summary": {
+            "starting_capital_usd": safe_float(summary_prev.get("starting_capital_usd")) or starting_capital_usd,
+            "equity_usd": safe_float(summary_prev.get("equity_usd")),
+            "total_pnl_usd": safe_float(summary_prev.get("total_pnl_usd")),
+            "realized_pnl_usd": safe_float(summary_prev.get("realized_pnl_usd")),
+            "unrealized_pnl_usd": safe_float(summary_prev.get("unrealized_pnl_usd")),
+            "roi_pct": safe_float(summary_prev.get("roi_pct")),
+            "open_count": int(safe_float(summary_prev.get("open_count")) or 0),
+            "recent_event_count": int(safe_float(summary_prev.get("recent_event_count")) or 0),
+            "closed_count": int(safe_float(summary_prev.get("closed_count")) or 0),
+            "total_order_count": int(safe_float(summary_prev.get("total_order_count")) or 0),
+            "win_count": int(safe_float(summary_prev.get("win_count")) or 0),
+            "loss_count": int(safe_float(summary_prev.get("loss_count")) or 0),
+            "win_rate": safe_float(summary_prev.get("win_rate")),
+            "equity_peak_usd": safe_float(summary_prev.get("equity_peak_usd")),
+            "max_drawdown_usd": safe_float(summary_prev.get("max_drawdown_usd")),
+            "max_drawdown_pct": safe_float(summary_prev.get("max_drawdown_pct")),
+            "equity_change_last_snapshot_usd": safe_float(summary_prev.get("equity_change_last_snapshot_usd")),
+            "equity_change_last_snapshot_pct": safe_float(summary_prev.get("equity_change_last_snapshot_pct")),
+            "curve_point_count": int(safe_float(summary_prev.get("curve_point_count")) or 0),
+        },
+        "runtime": {
+            **runtime_prev,
+            "candidate_count": summary.get("candidate_count"),
+            "candidate_preview": summary.get("candidate_preview") or [],
+            "warnings": warnings,
+            "opened": summary.get("opened") or [],
+            "closed": summary.get("closed") or [],
+            "failed": summary.get("failed") or [],
+        },
+    }
+    return payload
 
 
 def resolve_runtime_stop_window(signal_map):
@@ -1294,7 +1446,7 @@ def open_new_trades(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run C_overheat_fade live trader on Binance Futures testnet.")
+    parser = argparse.ArgumentParser(description="Run Binance USD-M live trader for one configured account.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to trader config JSON.")
     parser.add_argument("--force", action="store_true", help="Ignore enabled=false and submit testnet orders.")
     parser.add_argument("--allow-symbol", help="Only allow one perp symbol for validation, e.g. BTCUSDT.")
@@ -1307,13 +1459,18 @@ def main():
     args = parser.parse_args()
 
     apply_signal_runtime_overrides(args)
-    config = apply_runtime_overrides(load_config(Path(args.config).expanduser().resolve()), args)
+    config_path = Path(args.config).expanduser().resolve()
+    config = apply_runtime_overrides(load_config(config_path), args)
+    configure_runtime_paths(config, config_path)
     with file_lock(LOCK_PATH):
         state = load_state()
         manifest, rows = load_latest_snapshot()
         snapshot_id = manifest.get("latest_snapshot_id")
         candidates, signal_map = build_candidate_records(config, rows)
         runtime_stop_window_min_pct, runtime_stop_window_max_pct = resolve_runtime_stop_window(signal_map)
+        previous_payload = read_json(LATEST_PATH, default=None)
+        can_reconcile_exchange = config_has_api_credentials(config)
+        allow_new_entries = bool(config.get("enabled") or args.force)
 
         summary = {
             "ok": True,
@@ -1335,12 +1492,19 @@ def main():
             "warnings": [],
         }
 
-        if not (config.get("enabled") or args.force):
-            summary["warnings"].append("enabled=false，仅输出候选，不提交测试网订单。")
+        if not allow_new_entries and not can_reconcile_exchange:
+            prior_open_count = safe_float(((previous_payload or {}).get("summary") or {}).get("open_count")) or 0.0
+            local_open_count = len((state.get("active_trades") or {}))
+            if local_open_count > 0 or prior_open_count > 0:
+                raise RuntimeError(
+                    "enabled=false 且缺少 API Key/Secret，无法安全对账现有持仓。先提供环境变量后再停用账户。"
+                )
+            summary["warnings"].append("enabled=false，且未提供 API Key/Secret；本轮只保留上一份账户视图，不做交易所对账。")
             state["last_processed_snapshot_id"] = snapshot_id
             state["last_run_at"] = now_utc_iso()
             save_state(state)
-            write_json(LATEST_PATH, build_live_trader_payload(config, state, snapshot_id, None, summary))
+            payload = build_disabled_stale_payload(config, state, snapshot_id, summary, previous_payload=previous_payload)
+            write_json(LATEST_PATH, payload)
             print(json.dumps(summary, ensure_ascii=False, indent=2))
             return
 
@@ -1367,11 +1531,13 @@ def main():
         runtime = load_exchange_runtime(client, config, symbol_info_map=symbol_info_map)
         metrics = runtime["metrics"]
         orphan_symbols = sorted(set(runtime["short_positions"]) - set(state["active_trades"]))
+        if not allow_new_entries:
+            summary["warnings"].append("enabled=false，禁止新开仓，仅继续对账与管理现有持仓。")
         if orphan_symbols and config["strategy"].get("block_on_orphan_positions", True):
             summary["warnings"].append(f"检测到交易所孤儿仓位：{','.join(orphan_symbols)}，本轮阻止新开仓。")
         else:
             should_process_snapshot = args.reprocess_snapshot or state.get("last_processed_snapshot_id") != snapshot_id
-            if should_process_snapshot:
+            if allow_new_entries and should_process_snapshot:
                 summary["opened"], summary["failed"] = open_new_trades(
                     client,
                     config,
@@ -1382,6 +1548,8 @@ def main():
                     symbol_info_map,
                     snapshot_id,
                 )
+            elif not allow_new_entries:
+                pass
             else:
                 summary["warnings"].append("snapshot_id 未变化，本轮只做对账与持仓管理。")
 
@@ -1398,7 +1566,9 @@ def main():
             "open_gross_usd": metrics["open_gross_usd"],
             "gross_cap_usd": metrics["gross_cap_usd"],
         }
-        write_json(LATEST_PATH, build_live_trader_payload(config, state, snapshot_id, runtime, summary))
+        payload = build_live_trader_payload(config, state, snapshot_id, runtime, summary)
+        write_json(LATEST_PATH, payload)
+        append_equity_curve_row(config, payload)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

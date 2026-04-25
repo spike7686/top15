@@ -20,8 +20,10 @@ from top15_short_strategy import SHADOW_STRATEGY_LAYERS, compute_short_setup_fie
 DATA_DIR = WORKDIR / 'data' / 'top15_tracker'
 FRONTEND_DIR = WORKDIR / 'apps' / 'top15-frontend-v2'
 LIVE_TRADER_TESTNET_DIR = DATA_DIR / 'live_trader' / 'c_strategy_testnet'
+LIVE_TRADER_ACCOUNTS_DIR = DATA_DIR / 'live_trader' / 'accounts'
 SHORT_STRATEGY_CONFIG_PATH = WORKDIR / 'config' / 'short_strategy.post_confirm_weak_turn_v1.json'
 LIVE_TRADER_TESTNET_CONFIG_PATH = WORKDIR / 'config' / 'binance_c_strategy.testnet.json'
+LIVE_TRADER_ACCOUNTS_CONFIG_DIR = WORKDIR / 'config' / 'live_trader_accounts'
 KLINES_DIR = DATA_DIR / 'klines'
 HOST = os.environ.get('TOP15_BACKEND_HOST', '127.0.0.1')
 PORT = int(os.environ.get('TOP15_BACKEND_PORT', '8080'))
@@ -31,7 +33,15 @@ KLINE_CACHE = {}
 def read_json(path: Path, default=None):
     if not path.exists():
         return default
-    return json.loads(path.read_text(encoding='utf-8'))
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return default
+
+
+def write_json(path: Path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
 def read_jsonl_tail(path: Path, limit=50):
@@ -85,6 +95,57 @@ def parse_dt(value):
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def slugify_account_id(value):
+    text = str(value or '').strip().lower()
+    chars = []
+    for char in text:
+        if char.isalnum():
+            chars.append(char)
+        elif char in {'-', '_', '.'}:
+            chars.append('-')
+    slug = ''.join(chars).strip('-')
+    while '--' in slug:
+        slug = slug.replace('--', '-')
+    return slug or 'default'
+
+
+def resolve_account_id(config, config_path: Path):
+    explicit = (config or {}).get('account_id') or (config or {}).get('runtime_dirname')
+    if explicit:
+        return slugify_account_id(explicit)
+    if config_path.name == LIVE_TRADER_TESTNET_CONFIG_PATH.name:
+        return 'c_strategy_testnet'
+    return slugify_account_id(config_path.stem)
+
+
+def iter_live_account_configs():
+    if not LIVE_TRADER_ACCOUNTS_CONFIG_DIR.exists():
+        return []
+    items = []
+    for path in sorted(LIVE_TRADER_ACCOUNTS_CONFIG_DIR.glob('*.json')):
+        if '.example.' in path.name:
+            continue
+        raw = read_json(path, default=None)
+        if not isinstance(raw, dict):
+            continue
+        account_id = resolve_account_id(raw, path)
+        items.append({
+            'account_id': account_id,
+            'config_path': path,
+            'config': raw,
+            'runtime_dir': LIVE_TRADER_ACCOUNTS_DIR / account_id,
+        })
+    return items
+
+
+def find_live_account_config(account_id):
+    target = slugify_account_id(account_id)
+    for item in iter_live_account_configs():
+        if item['account_id'] == target:
+            return item
+    return None
 
 
 def load_symbol_1h_klines(symbol: str):
@@ -400,8 +461,28 @@ def compute_live_trade_pnl(open_event, close_event):
     return (entry_price - close_price) * qty
 
 
-def build_live_trade_stats(starting_capital_usd, current_equity_usd, current_unrealized_pnl_usd, last_run_at):
-    events = read_jsonl_tail(LIVE_TRADER_TESTNET_DIR / 'journal.jsonl', 100000)
+def load_live_curve_rows(runtime_dir: Path):
+    path = runtime_dir / 'equity_curve.csv'
+    rows = []
+    if not path.exists():
+        return rows
+    try:
+        with path.open('r', encoding='utf-8', newline='') as handle:
+            for row in csv.DictReader(handle):
+                if not isinstance(row, dict):
+                    continue
+                captured_at = row.get('captured_at_utc')
+                if not parse_dt(captured_at):
+                    continue
+                rows.append(dict(row))
+    except Exception:
+        return []
+    rows.sort(key=lambda item: item.get('captured_at_utc') or '')
+    return rows
+
+
+def build_live_trade_stats(runtime_dir, starting_capital_usd, current_equity_usd, current_unrealized_pnl_usd, last_run_at, current_open_count=None):
+    events = read_jsonl_tail(runtime_dir / 'journal.jsonl', 100000)
     events = [item for item in events if isinstance(item, dict)]
     events.sort(key=lambda item: item.get('ts') or '')
 
@@ -412,10 +493,11 @@ def build_live_trade_stats(starting_capital_usd, current_equity_usd, current_unr
     win_count = 0
     loss_count = 0
     realized_equity_usd = starting_capital_usd
-    curve_rows = []
+    curve_rows = load_live_curve_rows(runtime_dir)
+    use_event_curve_fallback = not curve_rows
 
     first_ts = (events[0].get('ts') if events else None) or last_run_at
-    if first_ts:
+    if use_event_curve_fallback and first_ts:
         curve_rows.append({
             'captured_at_utc': first_ts,
             'captured_at_cst': iso_to_cst(first_ts),
@@ -453,31 +535,36 @@ def build_live_trade_stats(starting_capital_usd, current_equity_usd, current_unr
                 elif pnl_usd < 0:
                     loss_count += 1
 
-        curve_rows.append({
-            'captured_at_utc': event.get('ts'),
-            'captured_at_cst': iso_to_cst(event.get('ts')),
-            'equity_usd': realized_equity_usd,
-            'realized_pnl_usd': realized_equity_usd - starting_capital_usd,
-            'unrealized_pnl_usd': 0.0,
-            'open_count': max(opened_count - closed_count, 0),
-            'closed_count': closed_count,
-            'win_count': win_count,
-            'loss_count': loss_count,
-            'pnl_usd': pnl_usd,
-        })
+        if use_event_curve_fallback:
+            curve_rows.append({
+                'captured_at_utc': event.get('ts'),
+                'captured_at_cst': iso_to_cst(event.get('ts')),
+                'equity_usd': realized_equity_usd,
+                'realized_pnl_usd': realized_equity_usd - starting_capital_usd,
+                'unrealized_pnl_usd': 0.0,
+                'open_count': max(opened_count - closed_count, 0),
+                'closed_count': closed_count,
+                'win_count': win_count,
+                'loss_count': loss_count,
+                'pnl_usd': pnl_usd,
+            })
 
-    current_equity_usd = current_equity_usd if current_equity_usd is not None else starting_capital_usd
+    current_equity_known = current_equity_usd is not None
     current_unrealized_pnl_usd = current_unrealized_pnl_usd if current_unrealized_pnl_usd is not None else 0.0
-    current_realized_pnl_usd = current_equity_usd - starting_capital_usd - current_unrealized_pnl_usd
+    current_realized_pnl_usd = (
+        current_equity_usd - starting_capital_usd - current_unrealized_pnl_usd
+        if current_equity_known
+        else None
+    )
     current_point_ts = last_run_at or first_ts
-    if current_point_ts:
+    if current_point_ts and current_equity_known:
         current_point = {
             'captured_at_utc': current_point_ts,
             'captured_at_cst': iso_to_cst(current_point_ts),
             'equity_usd': current_equity_usd,
             'realized_pnl_usd': current_realized_pnl_usd,
             'unrealized_pnl_usd': current_unrealized_pnl_usd,
-            'open_count': max(opened_count - closed_count, 0),
+            'open_count': max(int(current_open_count if current_open_count is not None else opened_count - closed_count), 0),
             'closed_count': closed_count,
             'win_count': win_count,
             'loss_count': loss_count,
@@ -525,20 +612,24 @@ def build_live_trade_stats(starting_capital_usd, current_equity_usd, current_unr
     }
 
 
-def enrich_live_trader_payload(payload):
+def enrich_live_trader_payload(payload, runtime_dir):
     if not isinstance(payload, dict):
         return payload
 
     starting_capital_usd = safe_float(payload.get('starting_capital_usd')) or 4941.0
     account = payload.get('account') or {}
     summary = payload.get('summary') or {}
-    current_equity_usd = safe_float(account.get('equity_usd')) or safe_float(summary.get('equity_usd')) or starting_capital_usd
-    current_unrealized_pnl_usd = safe_float(summary.get('unrealized_pnl_usd')) or 0.0
+    current_equity_usd = safe_float(account.get('equity_usd'))
+    if current_equity_usd is None:
+        current_equity_usd = safe_float(summary.get('equity_usd'))
+    current_unrealized_pnl_usd = safe_float(summary.get('unrealized_pnl_usd'))
     stats = build_live_trade_stats(
+        runtime_dir=runtime_dir,
         starting_capital_usd=starting_capital_usd,
         current_equity_usd=current_equity_usd,
         current_unrealized_pnl_usd=current_unrealized_pnl_usd,
         last_run_at=payload.get('last_run_at'),
+        current_open_count=safe_float(summary.get('open_count')),
     )
 
     summary_patch = {
@@ -716,14 +807,24 @@ def latest_paper_trader():
     }
 
 
-def latest_live_trader_testnet():
-    payload = read_json(LIVE_TRADER_TESTNET_DIR / 'latest.json', default=None)
-    if isinstance(payload, dict):
-        return enrich_live_trader_payload(payload)
+def latest_live_trader_payload(runtime_dir: Path, config_path: Path):
+    config = read_json(config_path, default={}) or {}
+    account_id = resolve_account_id(config, config_path)
 
-    config = read_json(LIVE_TRADER_TESTNET_CONFIG_PATH, default={}) or {}
-    state = read_json(LIVE_TRADER_TESTNET_DIR / 'state.json', default={}) or {}
-    events = read_jsonl_tail(LIVE_TRADER_TESTNET_DIR / 'journal.jsonl', 40)
+    payload = read_json(runtime_dir / 'latest.json', default=None)
+    if isinstance(payload, dict):
+        payload = {
+            **payload,
+            'account_id': account_id,
+            'account_label': config.get('account_label') or payload.get('account_label'),
+            'enabled': bool(config.get('enabled')),
+            'strategy_id': ((config.get('strategy') or {}).get('strategy_id')) or payload.get('strategy_id'),
+            'starting_capital_usd': safe_float(((config.get('reporting') or {}).get('starting_capital_usd'))) or payload.get('starting_capital_usd'),
+        }
+        return enrich_live_trader_payload(payload, runtime_dir)
+
+    state = read_json(runtime_dir / 'state.json', default={}) or {}
+    events = read_jsonl_tail(runtime_dir / 'journal.jsonl', 40)
     events.sort(key=lambda item: item.get('ts') or '', reverse=True)
     active_trades = state.get('active_trades') or {}
     positions = []
@@ -760,6 +861,7 @@ def latest_live_trader_testnet():
     return enrich_live_trader_payload({
         'ok': True,
         'version': state.get('version') or 'c_strategy_testnet_v1',
+        'account_id': account_id,
         'account_label': config.get('account_label') or 'binance_c_strategy_testnet',
         'strategy_id': ((config.get('strategy') or {}).get('strategy_id')) or 'C_overheat_fade',
         'enabled': bool(config.get('enabled')),
@@ -767,18 +869,18 @@ def latest_live_trader_testnet():
         'last_run_at': state.get('last_run_at'),
         'starting_capital_usd': starting_capital_usd,
         'account': {
-            'equity_usd': starting_capital_usd,
-            'available_balance_usd': starting_capital_usd,
+            'equity_usd': None,
+            'available_balance_usd': None,
             'open_gross_usd': sum(safe_float(item.get('position_notional_usd')) or 0.0 for item in positions),
             'gross_cap_usd': None,
         },
         'summary': {
             'starting_capital_usd': starting_capital_usd,
-            'equity_usd': starting_capital_usd,
-            'total_pnl_usd': 0.0,
-            'realized_pnl_usd': 0.0,
-            'unrealized_pnl_usd': 0.0,
-            'roi_pct': 0.0,
+            'equity_usd': None,
+            'total_pnl_usd': None,
+            'realized_pnl_usd': None,
+            'unrealized_pnl_usd': None,
+            'roi_pct': None,
             'open_count': len(positions),
             'recent_event_count': len(events),
         },
@@ -792,7 +894,21 @@ def latest_live_trader_testnet():
             'closed': [],
             'failed': [],
         },
-    })
+    }, runtime_dir)
+
+
+def latest_live_trader_testnet():
+    return latest_live_trader_payload(LIVE_TRADER_TESTNET_DIR, LIVE_TRADER_TESTNET_CONFIG_PATH)
+
+
+def latest_live_trader_accounts():
+    payloads = []
+    for item in iter_live_account_configs():
+        payload = latest_live_trader_payload(item['runtime_dir'], item['config_path'])
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    payloads.sort(key=lambda item: (str(item.get('account_label') or ''), str(item.get('account_id') or '')))
+    return payloads
 
 
 def list_snapshots(limit=100):
@@ -803,6 +919,19 @@ def list_snapshots(limit=100):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def read_json_body(self):
+        length = int(self.headers.get('Content-Length') or '0')
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw.decode('utf-8'))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -869,6 +998,43 @@ class Handler(BaseHTTPRequestHandler):
                 'rows': curve_rows,
             })
 
+        if path == '/api/live-trader-accounts':
+            payloads = []
+            for item in latest_live_trader_accounts():
+                payloads.append({key: value for key, value in item.items() if key != '_curve_history'})
+            return json_response(self, {
+                'ok': True,
+                'accounts': payloads,
+            })
+
+        if path == '/api/live-trader-account':
+            account_id = ((query.get('id') or [''])[0] or '').strip()
+            account = find_live_account_config(account_id)
+            if not account:
+                return json_response(self, {'ok': False, 'error': f'account not found: {account_id}'}, status=404)
+            payload = latest_live_trader_payload(account['runtime_dir'], account['config_path']) or {}
+            if isinstance(payload, dict):
+                payload = {key: value for key, value in payload.items() if key != '_curve_history'}
+            return json_response(self, {
+                'ok': True,
+                'account': payload,
+            })
+
+        if path == '/api/live-trader-account-curve':
+            account_id = ((query.get('id') or [''])[0] or '').strip()
+            interval_hours = (query.get('interval_hours') or ['4'])[0]
+            account = find_live_account_config(account_id)
+            if not account:
+                return json_response(self, {'ok': False, 'error': f'account not found: {account_id}'}, status=404)
+            payload = latest_live_trader_payload(account['runtime_dir'], account['config_path']) or {}
+            curve_rows = sample_curve_rows((payload.get('_curve_history') or []), interval_hours=interval_hours)
+            return json_response(self, {
+                'ok': True,
+                'account_id': account['account_id'],
+                'interval_hours': safe_float(interval_hours) or 4.0,
+                'rows': curve_rows,
+            })
+
         if path == '/api/short-strategy-config':
             return json_response(self, {
                 'ok': True,
@@ -899,6 +1065,38 @@ class Handler(BaseHTTPRequestHandler):
             return file_response(self, FRONTEND_DIR / 'app.js')
         if path == '/styles.css':
             return file_response(self, FRONTEND_DIR / 'styles.css')
+
+        return text_response(self, 'Not Found', 404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+
+        if path == '/api/live-trader-account-toggle':
+            body = self.read_json_body()
+            if body is None:
+                return json_response(self, {'ok': False, 'error': 'invalid json body'}, status=400)
+            account_id = slugify_account_id(body.get('account_id'))
+            enabled = body.get('enabled')
+            if enabled is None:
+                return json_response(self, {'ok': False, 'error': 'enabled is required'}, status=400)
+            account = find_live_account_config(account_id)
+            if not account:
+                return json_response(self, {'ok': False, 'error': f'account not found: {account_id}'}, status=404)
+            raw = read_json(account['config_path'], default={}) or {}
+            if not isinstance(raw, dict):
+                raw = {}
+            raw['enabled'] = bool(enabled)
+            if not raw.get('account_id'):
+                raw['account_id'] = account['account_id']
+            write_json(account['config_path'], raw)
+            payload = latest_live_trader_payload(account['runtime_dir'], account['config_path']) or {}
+            if isinstance(payload, dict):
+                payload = {key: value for key, value in payload.items() if key != '_curve_history'}
+            return json_response(self, {
+                'ok': True,
+                'account': payload,
+            })
 
         return text_response(self, 'Not Found', 404)
 

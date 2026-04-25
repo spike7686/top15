@@ -60,6 +60,11 @@
             <strong>币安测试网实盘</strong>
             <span id="workspaceLiveMeta">等待测试网同步…</span>
           </button>
+          <button id="workspaceMainnetTab" class="workspace-tab" type="button" role="tab" aria-selected="false" data-tab-target="mainnet">
+            <small>Mainnet Desk</small>
+            <strong>币安实盘多账户</strong>
+            <span id="workspaceMainnetMeta">等待实盘账户配置…</span>
+          </button>
           <button id="workspaceOverviewTab" class="workspace-tab" type="button" role="tab" aria-selected="false" data-tab-target="overview">
             <small>Market Atlas</small>
             <strong>TOP15 全景总览</strong>
@@ -325,6 +330,58 @@
                 <p>开平仓、保护单重建、失败与对账</p>
               </div>
               <div id="liveTraderEvents" class="candidate-list"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="workspace-pane" data-workspace-panel="mainnet">
+        <section class="panel mainnet-workspace-intro">
+          <div class="panel-header">
+            <div>
+              <h2>币安实盘多账户执行席位</h2>
+              <p>按配置文件自动发现实盘账户。每个账户独立资金、独立状态、独立订单日志与收益曲线，页面只做查看和启停。</p>
+            </div>
+            <div class="header-actions">
+              <p id="liveAccountsStatusText">等待实盘账户同步…</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel auto-trader-panel live-trader-panel">
+          <div class="panel-header">
+            <div>
+              <h2>实盘账户列表</h2>
+              <p>点击账户切换详情。启用/停用只改配置，下一轮 runner 会自动生效。</p>
+            </div>
+          </div>
+          <div id="liveAccountsSummary" class="paper-summary-grid auto-summary-grid"></div>
+          <div id="liveAccountsList" class="candidate-list live-account-grid"></div>
+        </section>
+
+        <section class="panel auto-trader-panel live-trader-panel">
+          <div class="panel-header">
+            <div>
+              <h2>当前选中账户详情</h2>
+              <p>展示该账户的资金、持仓、保护单、订单事件与全历史收益曲线入口。</p>
+            </div>
+          </div>
+          <div id="liveAccountDetailSummary" class="paper-summary-grid auto-summary-grid"></div>
+          <div id="liveAccountDetailMetaSummary" class="candidate-list auto-meta-list"></div>
+          <div class="auto-readonly-grid live-readonly-grid">
+            <div>
+              <div class="section-mini-head">
+                <h3>当前持仓</h3>
+                <p>真实持仓、保护单、未实现盈亏</p>
+              </div>
+              <div id="liveAccountPositions" class="candidate-list"></div>
+            </div>
+            <div>
+              <div class="section-mini-head">
+                <h3>订单 / 事件日志</h3>
+                <p>开平仓、保护单重建、失败与对账</p>
+              </div>
+              <div id="liveAccountEvents" class="candidate-list"></div>
             </div>
           </div>
         </section>

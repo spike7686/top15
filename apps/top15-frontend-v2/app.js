@@ -223,10 +223,14 @@ let autoTraderSettings = loadAutoTraderSettings();
 let autoTraderState = loadAutoTraderState();
 let serverPaperTrader = null;
 let liveTraderTestnet = null;
+let liveTraderAccounts = [];
+let selectedLiveTraderAccountId = null;
+let liveTraderAccountsLoadError = null;
 let activeWorkspaceTab = DEFAULT_WORKSPACE_TAB;
 let openAutoCurveStrategyId = null;
 const autoCurveHistoryCache = new Map();
 const liveCurveHistoryCache = new Map();
+const liveAccountCurveHistoryCache = new Map();
 
 const el = (id) => document.getElementById(id);
 const setControlValue = (id, value) => {
@@ -245,7 +249,7 @@ const readControlValue = (id, fallback = '') => {
 };
 
 function setWorkspaceTab(tabId = DEFAULT_WORKSPACE_TAB) {
-  activeWorkspaceTab = ['short', 'overview', 'live'].includes(tabId) ? tabId : DEFAULT_WORKSPACE_TAB;
+  activeWorkspaceTab = ['short', 'overview', 'live', 'mainnet'].includes(tabId) ? tabId : DEFAULT_WORKSPACE_TAB;
   document.querySelectorAll('.workspace-tab').forEach((button) => {
     const isActive = button.dataset.tabTarget === activeWorkspaceTab;
     button.classList.toggle('is-active', isActive);
@@ -785,8 +789,8 @@ function fillSelect(select, values) {
   });
 }
 
-async function fetchJson(path) {
-  const res = await fetch(`${API_BASE}${path}`);
+async function fetchJson(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, options);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
@@ -1403,6 +1407,7 @@ function emptyLiveTraderTestnet() {
   return {
     ok: true,
     version: null,
+    account_id: null,
     account_label: 'binance_c_strategy_testnet',
     strategy_id: 'C_overheat_fade',
     enabled: false,
@@ -1462,23 +1467,28 @@ function normalizeLiveTraderTestnet(payload) {
   };
   const positions = Array.isArray(payload.positions) ? payload.positions.map((item) => ({ ...item })) : [];
   const recentEvents = Array.isArray(payload.recent_events) ? payload.recent_events.map((item) => ({ ...item })) : [];
+  const accountEquityUsd = toNum(account.equity_usd);
+  const accountAvailableBalanceUsd = toNum(account.available_balance_usd);
+  const summaryEquityUsd = toNum(summary.equity_usd) ?? accountEquityUsd;
+  const totalPnlUsd = toNum(summary.total_pnl_usd) ?? (summaryEquityUsd !== null ? summaryEquityUsd - startingCapitalUsd : null);
   return {
     ...base,
     ...payload,
+    account_id: payload.account_id || base.account_id,
     starting_capital_usd: startingCapitalUsd,
     account: {
-      equity_usd: toNum(account.equity_usd) ?? startingCapitalUsd,
-      available_balance_usd: toNum(account.available_balance_usd) ?? startingCapitalUsd,
+      equity_usd: accountEquityUsd,
+      available_balance_usd: accountAvailableBalanceUsd,
       open_gross_usd: toNum(account.open_gross_usd) ?? 0,
       gross_cap_usd: toNum(account.gross_cap_usd)
     },
     summary: {
       ...summary,
-      equity_usd: toNum(summary.equity_usd) ?? toNum(account.equity_usd) ?? startingCapitalUsd,
-      total_pnl_usd: toNum(summary.total_pnl_usd) ?? ((toNum(summary.equity_usd) ?? toNum(account.equity_usd) ?? startingCapitalUsd) - startingCapitalUsd),
-      realized_pnl_usd: toNum(summary.realized_pnl_usd) ?? 0,
-      unrealized_pnl_usd: toNum(summary.unrealized_pnl_usd) ?? 0,
-      roi_pct: toNum(summary.roi_pct) ?? 0,
+      equity_usd: summaryEquityUsd,
+      total_pnl_usd: totalPnlUsd,
+      realized_pnl_usd: toNum(summary.realized_pnl_usd),
+      unrealized_pnl_usd: toNum(summary.unrealized_pnl_usd),
+      roi_pct: toNum(summary.roi_pct) ?? (totalPnlUsd !== null && startingCapitalUsd ? (totalPnlUsd / startingCapitalUsd * 100) : null),
       open_count: Math.round(toNum(summary.open_count) ?? positions.length),
       closed_count: Math.round(toNum(summary.closed_count) ?? 0),
       total_order_count: Math.round(toNum(summary.total_order_count) ?? 0),
@@ -1517,6 +1527,29 @@ async function fetchLiveTraderCurveHistory(intervalHours = 4) {
   return rows;
 }
 
+function normalizeLiveTraderAccounts(items) {
+  const normalized = Array.isArray(items) ? items.map((item) => normalizeLiveTraderTestnet(item)) : [];
+  normalized.sort((a, b) => String(a.account_label || '').localeCompare(String(b.account_label || '')));
+  if (normalized.length && !normalized.some((item) => item.account_id === selectedLiveTraderAccountId)) {
+    selectedLiveTraderAccountId = normalized[0].account_id || null;
+  }
+  return normalized;
+}
+
+function selectedLiveTraderAccount() {
+  if (!liveTraderAccounts.length) return null;
+  return liveTraderAccounts.find((item) => item.account_id === selectedLiveTraderAccountId) || liveTraderAccounts[0] || null;
+}
+
+async function fetchLiveTraderAccountCurveHistory(accountId, intervalHours = 4) {
+  const cacheKey = `${accountId || ''}:${intervalHours}`;
+  if (liveAccountCurveHistoryCache.has(cacheKey)) return liveAccountCurveHistoryCache.get(cacheKey);
+  const payload = await fetchJson(`/api/live-trader-account-curve?id=${encodeURIComponent(accountId || '')}&interval_hours=${encodeURIComponent(intervalHours)}`);
+  const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+  liveAccountCurveHistoryCache.set(cacheKey, rows);
+  return rows;
+}
+
 function getNormalizedStrategyBooks(data = normalizeServerPaperTrader(serverPaperTrader)) {
   const defs = getShadowStrategyDefs();
   return Object.keys(defs)
@@ -1547,6 +1580,13 @@ function renderWorkspaceTabMeta(rows = allRows) {
   if (liveMeta) {
     const live = normalizeLiveTraderTestnet(liveTraderTestnet);
     liveMeta.textContent = `持仓 ${live.summary?.open_count ?? 0} ｜ 盈亏 ${fmtSignedMoney(live.summary?.total_pnl_usd)} ｜ 本金 ${fmtMoney(live.starting_capital_usd)}`;
+  }
+
+  const mainnetMeta = el('workspaceMainnetMeta');
+  if (mainnetMeta) {
+    const enabledCount = liveTraderAccounts.filter((item) => item.enabled).length;
+    const openCount = liveTraderAccounts.reduce((sum, item) => sum + (item.summary?.open_count ?? 0), 0);
+    mainnetMeta.textContent = `账户 ${liveTraderAccounts.length} ｜ 已启用 ${enabledCount} ｜ 持仓 ${openCount}`;
   }
 }
 
@@ -2164,12 +2204,13 @@ function renderShortProfileOptions() {
 async function loadDashboard() {
   el('statusText').textContent = '加载中…';
   try {
-    const [manifestData, latestData, snapshotsData, paperTraderData, liveTraderData, strategyConfigData] = await Promise.all([
+    const [manifestData, latestData, snapshotsData, paperTraderData, liveTraderData, liveAccountsData, strategyConfigData] = await Promise.all([
       fetchJson('/api/manifest'),
       fetchJson('/api/latest-analysis'),
       fetchJson('/api/snapshots'),
       fetchJson('/api/paper-trader'),
       fetchJson('/api/live-trader-testnet').catch(() => ({ live_trader_testnet: null })),
+      fetchJson('/api/live-trader-accounts').catch((err) => ({ accounts: [], _error: err.message })),
       fetchJson('/api/short-strategy-config').catch(() => ({ config: FALLBACK_SHORT_STRATEGY_CONFIG }))
     ]);
 
@@ -2184,8 +2225,11 @@ async function loadDashboard() {
     allRows = latestData.rows || [];
     serverPaperTrader = normalizeServerPaperTrader(paperTraderData.paper_trader);
     liveTraderTestnet = normalizeLiveTraderTestnet(liveTraderData.live_trader_testnet);
+    liveTraderAccountsLoadError = liveAccountsData?._error || null;
+    liveTraderAccounts = normalizeLiveTraderAccounts(liveAccountsData.accounts || []);
     autoCurveHistoryCache.clear();
     liveCurveHistoryCache.clear();
+    liveAccountCurveHistoryCache.clear();
     syncPaperPositions();
     renderMeta(latestManifest, allRows);
     renderSnapshotOptions(snapshotsData.snapshots || [], latestManifest.latest_snapshot_id);
@@ -2196,6 +2240,9 @@ async function loadDashboard() {
     renderLiveTraderSummary();
     renderLiveTraderPositions();
     renderLiveTraderEvents();
+    renderLiveAccountsSummary();
+    renderLiveAccountsList();
+    renderSelectedLiveAccountDetail();
     applyFilters();
     renderAutoTraderSummary();
     renderAutoTraderConfigSummary();
@@ -2203,6 +2250,8 @@ async function loadDashboard() {
     renderAutoTraderCurveList();
     if (openAutoCurveStrategyId === 'live:testnet') {
       openLiveCurveModal();
+    } else if ((openAutoCurveStrategyId || '').startsWith('live:account:')) {
+      openLiveAccountCurveModal(openAutoCurveStrategyId.replace('live:account:', ''));
     } else if (openAutoCurveStrategyId) {
       openAutoCurveModal(openAutoCurveStrategyId);
     }
@@ -3204,6 +3253,219 @@ function renderLiveTraderEvents() {
     : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有测试网订单事件</div><div class="candidate-evidence-inline">开仓、平仓、保护单重建和失败事件都会落到这里，作为实盘执行审计日志。</div></article>';
 }
 
+function renderLiveAccountsSummary() {
+  const wrap = el('liveAccountsSummary');
+  const status = el('liveAccountsStatusText');
+  if (!wrap) return;
+  if (liveTraderAccountsLoadError) {
+    wrap.innerHTML = '<article class="candidate-card empty-card"><div class="candidate-title">实盘账户加载失败</div><div class="candidate-evidence-inline">后端接口返回异常，请检查 `/api/live-trader-accounts`。</div></article>';
+    if (status) status.textContent = `实盘账户加载失败：${liveTraderAccountsLoadError}`;
+    return;
+  }
+  const enabledCount = liveTraderAccounts.filter((item) => item.enabled).length;
+  const totalEquity = liveTraderAccounts.reduce((sum, item) => sum + (toNum(item.account?.equity_usd) || 0), 0);
+  const totalPnl = liveTraderAccounts.reduce((sum, item) => sum + (toNum(item.summary?.total_pnl_usd) || 0), 0);
+  const totalOpen = liveTraderAccounts.reduce((sum, item) => sum + (item.summary?.open_count ?? 0), 0);
+  const totalClosed = liveTraderAccounts.reduce((sum, item) => sum + (item.summary?.closed_count ?? 0), 0);
+  const cards = [
+    ['账户数', liveTraderAccounts.length],
+    ['已启用', enabledCount],
+    ['总权益', fmtMoney(totalEquity)],
+    ['累计盈亏', fmtSignedMoney(totalPnl)],
+    ['当前持仓', totalOpen],
+    ['已平仓', totalClosed]
+  ];
+  wrap.innerHTML = cards.map(([label, value]) => `
+    <article class="paper-stat-card auto-stat-card live-stat-card">
+      <span>${label}</span>
+      <strong>${value}</strong>
+    </article>
+  `).join('');
+  if (status) {
+    status.textContent = liveTraderAccounts.length
+      ? `已加载 ${liveTraderAccounts.length} 个实盘账户 ｜ 已启用 ${enabledCount} 个 ｜ 当前持仓 ${totalOpen} 个`
+      : '尚未发现实盘账户配置，请在 config/live_trader_accounts/ 下放置账户 JSON。';
+  }
+}
+
+function buildLiveAccountCard(account) {
+  const isSelected = account.account_id === selectedLiveTraderAccountId;
+  const preview = Array.isArray(account.runtime?.candidate_preview) ? account.runtime.candidate_preview.slice(0, 2) : [];
+  return `
+    <article class="candidate-card live-account-card ${isSelected ? 'is-selected' : ''}" data-action="select-live-account" data-account-id="${account.account_id || ''}">
+      <div class="candidate-main">
+        <div>
+          <div class="candidate-title">${account.account_label || account.account_id || '--'} <span>${account.account_id || '--'}</span></div>
+          <div class="candidate-tags">
+            <span class="pill subtle">策略 ${account.strategy_id || '--'}</span>
+            <span class="pill subtle">${account.enabled ? '已启用' : '已停用'}</span>
+            <span class="pill subtle">持仓 ${account.summary?.open_count ?? 0}</span>
+          </div>
+        </div>
+        <div class="candidate-score">
+          <strong class="${(toNum(account.summary?.total_pnl_usd) || 0) >= 0 ? 'up' : 'down'}">${fmtSignedMoney(account.summary?.total_pnl_usd)}</strong>
+          <small>${fmtSignedPct(account.summary?.roi_pct)}</small>
+        </div>
+      </div>
+      <div class="candidate-meta">
+        <span>权益 ${fmtMoney(account.account?.equity_usd)}</span>
+        <span>可用 ${fmtMoney(account.account?.available_balance_usd)}</span>
+        <span>已平 ${account.summary?.closed_count ?? 0}</span>
+        <span>胜率 ${fmtRatio(account.summary?.win_rate)}</span>
+        <span>最大回撤 ${fmtDrawdownStat(account.summary)}</span>
+        <span>最近同步 ${fmtLocalDateTime(account.last_run_at)}</span>
+      </div>
+      <div class="candidate-evidence-inline">${preview.length ? `候选预览：${preview.map((item) => `${item.symbol || '--'} / Q=${fmtNum(item.quality_score)} / 止损=${fmtPct(item.structure_stop_pct)}`).join(' ｜ ')}` : '当前没有候选预览，或该账户本轮未同步到候选。'}</div>
+      <div class="live-account-actions">
+        <button type="button" class="${account.enabled ? 'toggle-off' : 'toggle-on'}" data-action="toggle-live-account" data-account-id="${account.account_id || ''}" data-enabled="${account.enabled ? '0' : '1'}">${account.enabled ? '停用账户' : '启用账户'}</button>
+        <button type="button" class="ghost" data-action="open-live-account-curve" data-account-id="${account.account_id || ''}">查看全历史资金曲线</button>
+        <span class="action-note">配置切换后，下轮 runner 自动生效</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderLiveAccountsList() {
+  const wrap = el('liveAccountsList');
+  if (!wrap) return;
+  if (liveTraderAccountsLoadError) {
+    wrap.innerHTML = `<article class="candidate-card empty-card"><div class="candidate-title">实盘账户接口异常</div><div class="candidate-evidence-inline">${liveTraderAccountsLoadError}</div></article>`;
+    return;
+  }
+  wrap.innerHTML = liveTraderAccounts.length
+    ? liveTraderAccounts.map((account) => buildLiveAccountCard(account)).join('')
+    : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有实盘账户配置</div><div class="candidate-evidence-inline">把账户配置文件放到 `config/live_trader_accounts/` 下后，这里会自动列出每个账户的独立记录和开关。</div></article>';
+}
+
+function renderSelectedLiveAccountDetail() {
+  const summaryWrap = el('liveAccountDetailSummary');
+  const metaWrap = el('liveAccountDetailMetaSummary');
+  const positionsWrap = el('liveAccountPositions');
+  const eventsWrap = el('liveAccountEvents');
+  const account = selectedLiveTraderAccount();
+  if (!summaryWrap || !metaWrap || !positionsWrap || !eventsWrap) return;
+  if (!account) {
+    const emptyHtml = '<article class="candidate-card empty-card"><div class="candidate-title">尚未选择实盘账户</div><div class="candidate-evidence-inline">当前没有可展示的实盘账户详情。</div></article>';
+    summaryWrap.innerHTML = emptyHtml;
+    metaWrap.innerHTML = emptyHtml;
+    positionsWrap.innerHTML = emptyHtml;
+    eventsWrap.innerHTML = emptyHtml;
+    return;
+  }
+
+  const cards = [
+    ['本金', fmtMoney(account.starting_capital_usd)],
+    ['当前权益', fmtMoney(account.account?.equity_usd)],
+    ['累计盈亏', fmtSignedMoney(account.summary?.total_pnl_usd)],
+    ['收益率', fmtSignedPct(account.summary?.roi_pct)],
+    ['已实现盈亏', fmtSignedMoney(account.summary?.realized_pnl_usd)],
+    ['未实现盈亏', fmtSignedMoney(account.summary?.unrealized_pnl_usd)],
+    ['当前持仓', account.summary?.open_count ?? 0],
+    ['已平仓', account.summary?.closed_count ?? 0],
+    ['订单量', getSummaryOrderCount(account.summary)],
+    ['胜率', fmtRatio(account.summary?.win_rate)],
+    ['最大回撤', fmtDrawdownStat(account.summary)],
+    ['当前敞口', `${fmtMoney(account.account?.open_gross_usd)} / ${fmtMoney(account.account?.gross_cap_usd)}`]
+  ];
+  summaryWrap.innerHTML = cards.map(([label, value]) => `
+    <article class="paper-stat-card auto-stat-card live-stat-card">
+      <span>${label}</span>
+      <strong>${value}</strong>
+    </article>
+  `).join('');
+
+  const preview = Array.isArray(account.runtime?.candidate_preview) ? account.runtime.candidate_preview.slice(0, 3) : [];
+  metaWrap.innerHTML = `
+    <article class="candidate-card auto-config-card live-meta-card">
+      <div class="candidate-main">
+        <div>
+          <div class="candidate-title">${account.account_label || '--'} <span>${account.account_id || '--'}</span></div>
+          <div class="candidate-tags">
+            <span class="pill subtle">策略 ${account.strategy_id || '--'}</span>
+            <span class="pill subtle">${account.enabled ? '已启用' : '已停用'}</span>
+            <span class="pill subtle">事件 ${account.summary?.recent_event_count ?? 0}</span>
+          </div>
+        </div>
+        <div class="candidate-score">
+          <strong>${account.runtime?.candidate_count ?? '--'}</strong>
+          <small>本轮候选数</small>
+        </div>
+      </div>
+      <div class="candidate-meta">
+        <span>快照 ${account.snapshot_id || '--'}</span>
+        <span>最近同步 ${fmtLocalDateTime(account.last_run_at)}</span>
+        <span>已平 ${account.summary?.closed_count ?? 0}</span>
+        <span>订单量 ${getSummaryOrderCount(account.summary)}</span>
+        <span>胜率 ${fmtRatio(account.summary?.win_rate)}</span>
+        <span>最大回撤 ${fmtDrawdownStat(account.summary)}</span>
+      </div>
+      <div class="auto-curve-actions">
+        <button type="button" class="ghost" data-action="open-live-account-curve" data-account-id="${account.account_id || ''}">查看账户全历史资金曲线</button>
+        <span class="auto-curve-action-note">全历史 ｜ 每 4 小时一个点</span>
+      </div>
+      <div class="candidate-evidence-inline">${preview.length ? `候选预览：${preview.map((item) => `${item.symbol || '--'} / Q=${fmtNum(item.quality_score)} / 止损=${fmtPct(item.structure_stop_pct)}`).join(' ｜ ')}` : '当前没有候选预览。'}</div>
+    </article>
+  `;
+
+  const positions = [...(account.positions || [])].sort((a, b) => new Date(b.opened_at || 0) - new Date(a.opened_at || 0));
+  positionsWrap.innerHTML = positions.length
+    ? positions.map((position) => liveTraderPositionCard(position)).join('')
+    : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有实盘持仓</div><div class="candidate-evidence-inline">如果账户已经启用但这里为空，说明当前没有满足条件的已成交仓位，或者交易所侧仓位已全部平掉。</div></article>';
+
+  const events = [...(account.recent_events || [])].sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+  eventsWrap.innerHTML = events.length
+    ? events.map((event) => liveTraderEventCard(event)).join('')
+    : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有实盘订单事件</div><div class="candidate-evidence-inline">开仓、平仓、保护单重建和失败事件都会落到这里，作为该账户的独立执行审计日志。</div></article>';
+}
+
+async function toggleLiveAccountEnabled(accountId, enabled) {
+  try {
+    await fetchJson('/api/live-trader-account-toggle', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        account_id: accountId,
+        enabled: !!enabled
+      })
+    });
+    await loadDashboard();
+  } catch (err) {
+    window.alert(`切换账户开关失败：${err.message}`);
+  }
+}
+
+async function openLiveAccountCurveModal(accountId) {
+  const account = liveTraderAccounts.find((item) => item.account_id === accountId);
+  const modal = el('autoCurveModal');
+  const title = el('autoCurveModalTitle');
+  const subtitle = el('autoCurveModalSubtitle');
+  const body = el('autoCurveModalBody');
+  if (!account || !modal || !title || !subtitle || !body) return;
+
+  openAutoCurveStrategyId = `live:account:${accountId}`;
+  title.textContent = `${account.account_label || accountId} ｜ 全历史资金曲线`;
+  subtitle.textContent = '全历史数据按 4 小时采样一个点';
+  body.innerHTML = '<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">加载账户历史资金曲线中…</div></article>';
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('modal-open');
+
+  try {
+    const rows = await fetchLiveTraderAccountCurveHistory(accountId, 4);
+    if (openAutoCurveStrategyId !== `live:account:${accountId}`) return;
+    body.innerHTML = buildAutoCurveViewer({
+      strategyLabel: account.account_label || accountId,
+      startingEquity: account.starting_capital_usd,
+      rows,
+    });
+  } catch (err) {
+    if (openAutoCurveStrategyId !== `live:account:${accountId}`) return;
+    body.innerHTML = `<article class="candidate-card curve-viewer-card"><div class="curve-viewer-empty">加载账户历史资金曲线失败：${err.message}</div></article>`;
+  }
+}
+
 function openShortPosition(symbol) {
   const row = getRowBySymbol(symbol);
   if (!row) return;
@@ -3348,7 +3610,7 @@ function bindEvents() {
   if (toggleAlgoBtn) toggleAlgoBtn.addEventListener('click', toggleAlgoPanel);
   const clearClosedBtn = el('clearClosedBtn');
   if (clearClosedBtn) clearClosedBtn.addEventListener('click', clearClosedPositions);
-  ['workspaceShortTab', 'workspaceOverviewTab', 'workspaceLiveTab'].forEach((id) => {
+  ['workspaceShortTab', 'workspaceOverviewTab', 'workspaceLiveTab', 'workspaceMainnetTab'].forEach((id) => {
     const node = el(id);
     if (node) node.addEventListener('click', () => setWorkspaceTab(node.dataset.tabTarget));
   });
@@ -3379,9 +3641,26 @@ function bindEvents() {
       openLiveCurveModal();
       return;
     }
+    const liveAccountCurveOpenBtn = event.target.closest('[data-action="open-live-account-curve"]');
+    if (liveAccountCurveOpenBtn) {
+      openLiveAccountCurveModal(liveAccountCurveOpenBtn.dataset.accountId || '');
+      return;
+    }
     const curveCloseBtn = event.target.closest('[data-action="close-auto-curve"]');
     if (curveCloseBtn) {
       closeAutoCurveModal();
+      return;
+    }
+    const toggleLiveAccountBtn = event.target.closest('[data-action="toggle-live-account"]');
+    if (toggleLiveAccountBtn) {
+      toggleLiveAccountEnabled(toggleLiveAccountBtn.dataset.accountId || '', toggleLiveAccountBtn.dataset.enabled === '1');
+      return;
+    }
+    const selectLiveAccountBtn = event.target.closest('[data-action="select-live-account"]');
+    if (selectLiveAccountBtn) {
+      selectedLiveTraderAccountId = selectLiveAccountBtn.dataset.accountId || null;
+      renderLiveAccountsList();
+      renderSelectedLiveAccountDetail();
       return;
     }
     const openBtn = event.target.closest('[data-action="open-short"]');
