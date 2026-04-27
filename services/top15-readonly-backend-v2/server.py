@@ -935,6 +935,28 @@ def compact_live_trader_account_payload(payload):
     }
 
 
+def trim_live_trader_detail_payload(payload, event_limit=200):
+    if not isinstance(payload, dict):
+        return payload
+    recent_events = payload.get('recent_events') or []
+    if not isinstance(recent_events, list):
+        recent_events = []
+    trimmed_events = recent_events[:max(0, int(event_limit or 0))]
+    summary = payload.get('summary') or {}
+    return {
+        key: value
+        for key, value in {
+            **payload,
+            'recent_events': trimmed_events,
+            'summary': {
+                **summary,
+                'recent_event_count': int(safe_float(summary.get('recent_event_count')) or len(recent_events)),
+            },
+        }.items()
+        if key != '_curve_history'
+    }
+
+
 def list_snapshots(limit=100):
     raw_dir = DATA_DIR / 'snapshots' / 'raw'
     if not raw_dir.exists():
@@ -1037,8 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
             if not account:
                 return json_response(self, {'ok': False, 'error': f'account not found: {account_id}'}, status=404)
             payload = latest_live_trader_payload(account['runtime_dir'], account['config_path']) or {}
-            if isinstance(payload, dict):
-                payload = {key: value for key, value in payload.items() if key != '_curve_history'}
+            payload = trim_live_trader_detail_payload(payload, event_limit=200)
             return json_response(self, {
                 'ok': True,
                 'account': payload,

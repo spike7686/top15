@@ -3466,7 +3466,9 @@ function renderSelectedLiveAccountDetail() {
     ? positions.map((position) => liveTraderPositionCard(position)).join('')
     : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有实盘持仓</div><div class="candidate-evidence-inline">如果账户已经启用但这里为空，说明当前没有满足条件的已成交仓位，或者交易所侧仓位已全部平掉。</div></article>';
 
-  const events = [...(account.recent_events || [])].sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0));
+  const events = [...(account.recent_events || [])]
+    .sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0))
+    .slice(0, 200);
   eventsWrap.innerHTML = events.length
     ? events.map((event) => liveTraderEventCard(event)).join('')
     : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有实盘订单事件</div><div class="candidate-evidence-inline">开仓、平仓、保护单重建和失败事件都会落到这里，作为该账户的独立执行审计日志。</div></article>';
