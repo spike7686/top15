@@ -807,6 +807,56 @@ def latest_paper_trader():
     }
 
 
+def compact_paper_book_payload(book):
+    if not isinstance(book, dict):
+        return book
+    return {
+        'strategy_id': book.get('strategy_id'),
+        'strategy_code': book.get('strategy_code'),
+        'strategy_label': book.get('strategy_label'),
+        'description': book.get('description'),
+        'entry_live': book.get('entry_live'),
+        'entry_armed_snapshot_id': book.get('entry_armed_snapshot_id'),
+        'entry_armed_at': book.get('entry_armed_at'),
+        'config': book.get('config') or {},
+        'summary': book.get('summary') or {},
+        'recent_equity_curve': list(book.get('recent_equity_curve') or []),
+    }
+
+
+def compact_paper_trader_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+    books = payload.get('strategy_books') or {}
+    compact_books = {
+        strategy_id: compact_paper_book_payload(book)
+        for strategy_id, book in books.items()
+        if isinstance(book, dict)
+    }
+    return {
+        'ok': payload.get('ok', True),
+        'version': payload.get('version'),
+        'config': payload.get('config') or {},
+        'last_processed_snapshot_id': payload.get('last_processed_snapshot_id'),
+        'last_processed_at': payload.get('last_processed_at'),
+        'summary': payload.get('summary') or {},
+        'recent_equity_curve': list(payload.get('recent_equity_curve') or []),
+        'strategy_books': compact_books,
+    }
+
+
+def trim_paper_book_detail_payload(book, closed_limit=120, event_limit=120):
+    if not isinstance(book, dict):
+        return book
+    return {
+        **book,
+        'open_orders': list(book.get('open_orders') or []),
+        'recent_closed_orders': list(book.get('recent_closed_orders') or [])[:max(0, int(closed_limit or 0))],
+        'recent_events': list(book.get('recent_events') or [])[:max(0, int(event_limit or 0))],
+        'recent_equity_curve': list(book.get('recent_equity_curve') or []),
+    }
+
+
 def latest_live_trader_payload(runtime_dir: Path, config_path: Path):
     config = read_json(config_path, default={}) or {}
     account_id = resolve_account_id(config, config_path)
@@ -1010,9 +1060,26 @@ class Handler(BaseHTTPRequestHandler):
             })
 
         if path == '/api/paper-trader':
+            payload = compact_paper_trader_payload(latest_paper_trader())
             return json_response(self, {
                 'ok': True,
-                'paper_trader': latest_paper_trader(),
+                'paper_trader': payload,
+            })
+
+        if path == '/api/paper-trader-book':
+            strategy_id = ((query.get('strategy_id') or [''])[0] or '').strip()
+            payload = latest_paper_trader() or {}
+            books = payload.get('strategy_books') or {}
+            book = books.get(strategy_id)
+            if not isinstance(book, dict):
+                return json_response(self, {
+                    'ok': False,
+                    'error': f'strategy book not found: {strategy_id}',
+                }, status=404)
+            return json_response(self, {
+                'ok': True,
+                'strategy_id': strategy_id,
+                'book': trim_paper_book_detail_payload(book, closed_limit=120, event_limit=120),
             })
 
         if path == '/api/paper-trader-curve':

@@ -222,6 +222,9 @@ let paperPositions = loadPaperPositions();
 let autoTraderSettings = loadAutoTraderSettings();
 let autoTraderState = loadAutoTraderState();
 let serverPaperTrader = null;
+let selectedPaperTraderBookId = null;
+let selectedPaperTraderBookDetail = null;
+let selectedPaperTraderBookDetailError = null;
 let liveTraderTestnet = null;
 let liveTraderAccounts = [];
 let selectedLiveTraderAccountId = null;
@@ -1358,6 +1361,20 @@ function emptyServerPaperTrader() {
   };
 }
 
+function normalizeServerStrategyBook(strategyId, rawBook = {}, def = {}) {
+  const bookBase = emptyServerStrategyBook(strategyId, def);
+  return {
+    ...bookBase,
+    ...rawBook,
+    config: { ...bookBase.config, ...(rawBook.config || {}) },
+    summary: { ...bookBase.summary, ...(rawBook.summary || {}) },
+    open_orders: Array.isArray(rawBook.open_orders) ? rawBook.open_orders.map((item) => ({ ...item })) : [],
+    recent_closed_orders: Array.isArray(rawBook.recent_closed_orders) ? rawBook.recent_closed_orders.map((item) => ({ ...item })) : [],
+    recent_events: Array.isArray(rawBook.recent_events) ? rawBook.recent_events.map((item) => ({ ...item })) : [],
+    recent_equity_curve: Array.isArray(rawBook.recent_equity_curve) ? rawBook.recent_equity_curve.map((item) => ({ ...item })) : []
+  };
+}
+
 function normalizeServerPaperTrader(payload) {
   const base = emptyServerPaperTrader();
   if (!payload || typeof payload !== 'object') return base;
@@ -1380,16 +1397,7 @@ function normalizeServerPaperTrader(payload) {
         }
       : null;
     const rawBook = (payload.strategy_books && payload.strategy_books[strategyId]) || legacyBookPayload || {};
-    strategyBooks[strategyId] = {
-      ...bookBase,
-      ...rawBook,
-      config: { ...bookBase.config, ...(rawBook.config || {}) },
-      summary: { ...bookBase.summary, ...(rawBook.summary || {}) },
-      open_orders: Array.isArray(rawBook.open_orders) ? rawBook.open_orders.map((item) => ({ ...item })) : [],
-      recent_closed_orders: Array.isArray(rawBook.recent_closed_orders) ? rawBook.recent_closed_orders.map((item) => ({ ...item })) : [],
-      recent_events: Array.isArray(rawBook.recent_events) ? rawBook.recent_events.map((item) => ({ ...item })) : [],
-      recent_equity_curve: Array.isArray(rawBook.recent_equity_curve) ? rawBook.recent_equity_curve.map((item) => ({ ...item })) : []
-    };
+    strategyBooks[strategyId] = normalizeServerStrategyBook(strategyId, { ...bookBase, ...rawBook }, def);
   });
   const fallbackSummary = aggregateServerBookSummary(strategyBooks);
   return {
@@ -1599,6 +1607,62 @@ function getNormalizedStrategyBooks(data = normalizeServerPaperTrader(serverPape
     .map((strategyId) => data.strategy_books?.[strategyId])
     .filter(Boolean)
     .sort((a, b) => String(a.strategy_code || '').localeCompare(String(b.strategy_code || '')));
+}
+
+function pickDefaultPaperTraderBookId(books = []) {
+  const activeBook = books.find((book) => (toNum(book.summary?.open_count) || 0) > 0);
+  if (activeBook?.strategy_id) return activeBook.strategy_id;
+  const tradedBook = books.find((book) => getSummaryOrderCount(book.summary) > 0);
+  if (tradedBook?.strategy_id) return tradedBook.strategy_id;
+  return books[0]?.strategy_id || null;
+}
+
+function selectedPaperTraderBook(data = normalizeServerPaperTrader(serverPaperTrader)) {
+  const books = getNormalizedStrategyBooks(data);
+  if (!books.length) return null;
+  const summaryBook = books.find((item) => item.strategy_id === selectedPaperTraderBookId) || books[0] || null;
+  if (!summaryBook) return null;
+  if (!selectedPaperTraderBookDetail || selectedPaperTraderBookDetail.strategy_id !== summaryBook.strategy_id) return summaryBook;
+  return {
+    ...summaryBook,
+    ...selectedPaperTraderBookDetail,
+    config: {
+      ...(summaryBook.config || {}),
+      ...(selectedPaperTraderBookDetail.config || {})
+    },
+    summary: {
+      ...(summaryBook.summary || {}),
+      ...(selectedPaperTraderBookDetail.summary || {})
+    },
+    open_orders: Array.isArray(selectedPaperTraderBookDetail.open_orders) ? selectedPaperTraderBookDetail.open_orders : [],
+    recent_closed_orders: Array.isArray(selectedPaperTraderBookDetail.recent_closed_orders) ? selectedPaperTraderBookDetail.recent_closed_orders : [],
+    recent_events: Array.isArray(selectedPaperTraderBookDetail.recent_events) ? selectedPaperTraderBookDetail.recent_events : [],
+    recent_equity_curve: Array.isArray(selectedPaperTraderBookDetail.recent_equity_curve) && selectedPaperTraderBookDetail.recent_equity_curve.length
+      ? selectedPaperTraderBookDetail.recent_equity_curve
+      : (summaryBook.recent_equity_curve || [])
+  };
+}
+
+async function fetchPaperTraderBookDetail(strategyId) {
+  const payload = await fetchJson(`/api/paper-trader-book?strategy_id=${encodeURIComponent(strategyId || '')}`);
+  const def = getShadowStrategyDefs()[strategyId] || {};
+  return normalizeServerStrategyBook(strategyId, payload?.book || {}, def);
+}
+
+async function refreshSelectedPaperTraderBookDetail() {
+  const strategyId = selectedPaperTraderBookId;
+  if (!strategyId) {
+    selectedPaperTraderBookDetail = null;
+    selectedPaperTraderBookDetailError = null;
+    return;
+  }
+  try {
+    selectedPaperTraderBookDetail = await fetchPaperTraderBookDetail(strategyId);
+    selectedPaperTraderBookDetailError = null;
+  } catch (err) {
+    selectedPaperTraderBookDetail = null;
+    selectedPaperTraderBookDetailError = err.message;
+  }
 }
 
 function renderWorkspaceTabMeta(rows = allRows) {
@@ -2267,12 +2331,23 @@ async function loadDashboard() {
     latestManifest = manifestData.manifest || {};
     allRows = latestData.rows || [];
     serverPaperTrader = normalizeServerPaperTrader(paperTraderData.paper_trader);
+    const paperBooks = getNormalizedStrategyBooks(serverPaperTrader);
+    if (!paperBooks.length) {
+      selectedPaperTraderBookId = null;
+    } else if (!paperBooks.some((book) => book.strategy_id === selectedPaperTraderBookId)) {
+      selectedPaperTraderBookId = pickDefaultPaperTraderBookId(paperBooks);
+    }
+    selectedPaperTraderBookDetail = null;
+    selectedPaperTraderBookDetailError = null;
     liveTraderTestnet = normalizeLiveTraderTestnet(liveTraderData.live_trader_testnet);
     liveTraderAccountsLoadError = liveAccountsData?._error || null;
     liveTraderAccounts = normalizeLiveTraderAccounts(liveAccountsData.accounts || []);
     selectedLiveTraderAccountDetail = null;
     selectedLiveTraderAccountDetailError = null;
-    await refreshSelectedLiveTraderAccountDetail();
+    await Promise.all([
+      refreshSelectedPaperTraderBookDetail(),
+      refreshSelectedLiveTraderAccountDetail()
+    ]);
     autoCurveHistoryCache.clear();
     liveCurveHistoryCache.clear();
     liveAccountCurveHistoryCache.clear();
@@ -2997,6 +3072,7 @@ function renderAutoTraderConfigSummary() {
         </div>
         <div class="auto-curve-actions">
           <button type="button" class="ghost" data-action="open-auto-curve" data-strategy-id="${book.strategy_id}">查看全历史收益图</button>
+          <button type="button" class="ghost" data-action="select-paper-trader-book" data-strategy-id="${book.strategy_id}">查看订单明细</button>
           <span class="auto-curve-action-note">全历史 ｜ 每 4 小时一个点</span>
         </div>
         <div class="candidate-evidence-inline">${book.description || '影子规则与正式规则并行运行，用于比较哪一层更适合做主策略。'}</div>
@@ -3074,26 +3150,160 @@ function renderAutoTraderOrderList() {
   const wrap = el('autoTraderOrderList');
   const data = normalizeServerPaperTrader(serverPaperTrader);
   const books = getNormalizedStrategyBooks(data);
-  const sections = books.map((book) => {
-    const open = [...(book.open_orders || [])].sort((a, b) => new Date(b.entry_time || 0) - new Date(a.entry_time || 0));
-    const closed = [...(book.recent_closed_orders || [])].sort((a, b) => new Date(b.close_time || 0) - new Date(a.close_time || 0));
-    const list = [...open, ...closed].slice(0, 8);
-    if (!list.length) return '';
-    return `
-      <section class="auto-book-section">
-        <div class="section-mini-head">
-          <h3>${book.strategy_label}</h3>
-          <p>开仓 ${book.summary?.open_count ?? 0} ｜ 已平 ${book.summary?.closed_count ?? 0} ｜ 订单 ${getSummaryOrderCount(book.summary)} ｜ 胜率 ${fmtRatio(book.summary?.win_rate)} ｜ 回撤 ${fmtPct(book.summary?.max_drawdown_pct)}</p>
+  if (!books.length) {
+    wrap.innerHTML = '<article class="candidate-card empty-card"><div class="candidate-title">当前没有服务端自动订单</div><div class="candidate-evidence-inline">采集器每轮快照完成后，服务器会按多层影子规则分别决定是否开平仓。当前为空通常表示还没有满足条件的币种，或服务器尚未跑完首轮。</div></article>';
+    return;
+  }
+
+  const selectedBook = selectedPaperTraderBook(data);
+  const selectedStrategyId = selectedBook?.strategy_id || selectedPaperTraderBookId || pickDefaultPaperTraderBookId(books);
+  const selectorHtml = `
+    <section class="auto-book-section">
+      <div class="section-mini-head">
+        <h3>策略订单明细按需加载</h3>
+        <p>首屏只加载摘要；点击某个策略时，再单独拉该账本的开平仓与事件明细。</p>
+      </div>
+      <div class="candidate-list">
+        ${books.map((book) => `
+          <article class="candidate-card auto-book-card ${book.strategy_id === selectedStrategyId ? 'is-selected' : ''}">
+            <div class="candidate-main">
+              <div>
+                <div class="candidate-title">${book.strategy_label} <span>${book.strategy_code || '--'}</span></div>
+                <div class="candidate-tags">
+                  <span class="pill subtle">开仓 ${book.summary?.open_count ?? 0}</span>
+                  <span class="pill subtle">已平 ${book.summary?.closed_count ?? 0}</span>
+                  <span class="pill subtle">订单 ${getSummaryOrderCount(book.summary)}</span>
+                </div>
+              </div>
+              <div class="candidate-score">
+                <strong>${fmtSignedMoney((toNum(book.summary?.equity_usd) || 0) - (toNum(book.summary?.starting_equity_usd) || 0))}</strong>
+                <small>${fmtRatio(book.summary?.win_rate)} 胜率</small>
+              </div>
+            </div>
+            <div class="candidate-meta">
+              <span>当前权益 ${fmtMoney(book.summary?.equity_usd)}</span>
+              <span>回撤 ${fmtDrawdownStat(book.summary)}</span>
+              <span>上一跳 ${fmtCurveChange(book.summary)}</span>
+            </div>
+            <div class="live-account-actions">
+              <button type="button" class="ghost" data-action="select-paper-trader-book" data-strategy-id="${book.strategy_id}">${book.strategy_id === selectedStrategyId ? '已选中明细' : '查看订单明细'}</button>
+              <button type="button" class="ghost" data-action="open-auto-curve" data-strategy-id="${book.strategy_id}">查看全历史收益图</button>
+              <span class="action-note">${book.description || '影子账本明细'}</span>
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    </section>
+  `;
+
+  if (!selectedBook) {
+    wrap.innerHTML = selectorHtml;
+    return;
+  }
+
+  if (!selectedPaperTraderBookDetail && selectedPaperTraderBookDetailError) {
+    wrap.innerHTML = `${selectorHtml}<article class="candidate-card empty-card"><div class="candidate-title">${selectedBook.strategy_label} 明细加载失败</div><div class="candidate-evidence-inline">${selectedPaperTraderBookDetailError}</div></article>`;
+    return;
+  }
+
+  if (!selectedPaperTraderBookDetail || selectedPaperTraderBookDetail.strategy_id !== selectedBook.strategy_id) {
+    wrap.innerHTML = `${selectorHtml}<article class="candidate-card empty-card"><div class="candidate-title">正在加载 ${selectedBook.strategy_label} 明细</div><div class="candidate-evidence-inline">仅在你选中的策略上拉取订单与事件，避免首屏一次性下载全部账本。</div></article>`;
+    return;
+  }
+
+  const open = [...(selectedBook.open_orders || [])].sort((a, b) => new Date(b.entry_time || 0) - new Date(a.entry_time || 0));
+  const closed = [...(selectedBook.recent_closed_orders || [])].sort((a, b) => new Date(b.close_time || 0) - new Date(a.close_time || 0));
+  const events = [...(selectedBook.recent_events || [])].sort((a, b) => new Date(b.ts || 0) - new Date(a.ts || 0)).slice(0, 20);
+  const detailSections = [];
+
+  detailSections.push(`
+    <section class="auto-book-section">
+      <div class="section-mini-head">
+        <h3>${selectedBook.strategy_label}</h3>
+        <p>开仓 ${selectedBook.summary?.open_count ?? 0} ｜ 已平 ${selectedBook.summary?.closed_count ?? 0} ｜ 订单 ${getSummaryOrderCount(selectedBook.summary)} ｜ 胜率 ${fmtRatio(selectedBook.summary?.win_rate)} ｜ 回撤 ${fmtPct(selectedBook.summary?.max_drawdown_pct)}</p>
+      </div>
+      <article class="candidate-card auto-config-card auto-book-card">
+        <div class="candidate-main">
+          <div>
+            <div class="candidate-title">${selectedBook.strategy_label} <span>${selectedBook.config?.signal_name || '--'}</span></div>
+            <div class="candidate-tags">
+              <span class="pill subtle">过滤 ${Array.isArray(selectedBook.config?.entry_filters) && selectedBook.config.entry_filters.length ? selectedBook.config.entry_filters.join(' + ') : 'none'}</span>
+              <span class="pill subtle">初始资金 ${fmtMoney(selectedBook.summary?.starting_equity_usd)}</span>
+            </div>
+          </div>
+          <div class="candidate-score">
+            <strong>${fmtSignedMoney((toNum(selectedBook.summary?.equity_usd) || 0) - (toNum(selectedBook.summary?.starting_equity_usd) || 0))}</strong>
+            <small>${fmtCurveChange(selectedBook.summary)}</small>
+          </div>
         </div>
-        <div class="candidate-list">
-          ${list.map((order) => autoOrderCard(order)).join('')}
+        <div class="candidate-meta">
+          <span>当前权益 ${fmtMoney(selectedBook.summary?.equity_usd)}</span>
+          <span>最大回撤 ${fmtDrawdownStat(selectedBook.summary)}</span>
+          <span>已实现 ${fmtSignedMoney(selectedBook.summary?.realized_pnl_usd)}</span>
+          <span>未实现 ${fmtSignedMoney(selectedBook.summary?.unrealized_pnl_usd)}</span>
+          <span>累计R ${fmtSignedNum(selectedBook.summary?.total_realized_r)}</span>
+          <span>事件 ${selectedBook.recent_events?.length ?? 0}</span>
         </div>
-      </section>
-    `;
-  }).filter(Boolean);
-  wrap.innerHTML = sections.length
-    ? sections.join('')
-    : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有服务端自动订单</div><div class="candidate-evidence-inline">采集器每轮快照完成后，服务器会按多层影子规则分别决定是否开平仓。当前为空通常表示还没有满足条件的币种，或服务器尚未跑完首轮。</div></article>';
+      </article>
+    </section>
+  `);
+
+  detailSections.push(`
+    <section class="auto-book-section">
+      <div class="section-mini-head">
+        <h3>当前开仓</h3>
+        <p>${selectedBook.strategy_label} 当前持仓 ${open.length} 笔</p>
+      </div>
+      <div class="candidate-list">
+        ${open.length
+          ? open.map((order) => autoOrderCard(order)).join('')
+          : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有开仓单</div><div class="candidate-evidence-inline">这层策略当前没有活动仓位。</div></article>'}
+      </div>
+    </section>
+  `);
+
+  detailSections.push(`
+    <section class="auto-book-section">
+      <div class="section-mini-head">
+        <h3>最近平仓</h3>
+        <p>最近返回 ${closed.length} 条已平订单记录</p>
+      </div>
+      <div class="candidate-list">
+        ${closed.length
+          ? closed.map((order) => autoOrderCard(order)).join('')
+          : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有已平仓记录</div><div class="candidate-evidence-inline">这层策略还没有形成平仓样本，或样本已被精简接口裁剪掉。</div></article>'}
+      </div>
+    </section>
+  `);
+
+  detailSections.push(`
+    <section class="auto-book-section">
+      <div class="section-mini-head">
+        <h3>最近事件</h3>
+        <p>仅展示最近 20 条，完整大曲线和账本统计仍保留在其他区块。</p>
+      </div>
+      <div class="candidate-list">
+        ${events.length
+          ? events.map((event) => `
+            <article class="candidate-card">
+              <div class="candidate-main">
+                <div>
+                  <div class="candidate-title">${event.symbol || '--'} <span>${event.event_type || '--'}</span></div>
+                  <div class="candidate-tags">
+                    <span class="pill subtle">${fmtLocalDateTime(event.ts)}</span>
+                    <span class="pill subtle">快照 ${event.snapshot_id || '--'}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="candidate-evidence-inline">${event.signal_summary || event.reason || event.close_reason || '事件明细已记录到服务端账本。'}</div>
+            </article>
+          `).join('')
+          : '<article class="candidate-card empty-card"><div class="candidate-title">当前没有最近事件</div><div class="candidate-evidence-inline">开平仓、持仓切换和审计事件都会在这里按需返回。</div></article>'}
+      </div>
+    </section>
+  `);
+
+  wrap.innerHTML = `${selectorHtml}${detailSections.join('')}`;
 }
 
 function renderAutoTraderCurveList() {
@@ -3503,6 +3713,15 @@ async function selectLiveTraderAccount(accountId) {
   renderSelectedLiveAccountDetail();
 }
 
+async function selectPaperTraderBook(strategyId) {
+  selectedPaperTraderBookId = strategyId || null;
+  selectedPaperTraderBookDetail = null;
+  selectedPaperTraderBookDetailError = null;
+  renderAutoTraderOrderList();
+  await refreshSelectedPaperTraderBookDetail();
+  renderAutoTraderOrderList();
+}
+
 async function openLiveAccountCurveModal(accountId) {
   const account = liveTraderAccounts.find((item) => item.account_id === accountId);
   const modal = el('autoCurveModal');
@@ -3711,6 +3930,11 @@ function bindEvents() {
     const liveAccountCurveOpenBtn = event.target.closest('[data-action="open-live-account-curve"]');
     if (liveAccountCurveOpenBtn) {
       openLiveAccountCurveModal(liveAccountCurveOpenBtn.dataset.accountId || '');
+      return;
+    }
+    const selectPaperTraderBookBtn = event.target.closest('[data-action="select-paper-trader-book"]');
+    if (selectPaperTraderBookBtn) {
+      selectPaperTraderBook(selectPaperTraderBookBtn.dataset.strategyId || '');
       return;
     }
     const curveCloseBtn = event.target.closest('[data-action="close-auto-curve"]');
