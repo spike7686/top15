@@ -911,6 +911,30 @@ def latest_live_trader_accounts():
     return payloads
 
 
+def compact_live_trader_account_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+    runtime = payload.get('runtime') or {}
+    return {
+        key: value
+        for key, value in {
+            **payload,
+            'positions': [],
+            'recent_events': [],
+            'recent_equity_curve': payload.get('recent_equity_curve') or [],
+            'runtime': {
+                'candidate_count': runtime.get('candidate_count'),
+                'candidate_preview': runtime.get('candidate_preview') or [],
+                'warnings': runtime.get('warnings') or [],
+                'opened': [],
+                'closed': [],
+                'failed': [],
+            },
+        }.items()
+        if key != '_curve_history'
+    }
+
+
 def list_snapshots(limit=100):
     raw_dir = DATA_DIR / 'snapshots' / 'raw'
     if not raw_dir.exists():
@@ -1001,7 +1025,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/live-trader-accounts':
             payloads = []
             for item in latest_live_trader_accounts():
-                payloads.append({key: value for key, value in item.items() if key != '_curve_history'})
+                payloads.append(compact_live_trader_account_payload(item))
             return json_response(self, {
                 'ok': True,
                 'accounts': payloads,

@@ -225,6 +225,8 @@ let serverPaperTrader = null;
 let liveTraderTestnet = null;
 let liveTraderAccounts = [];
 let selectedLiveTraderAccountId = null;
+let selectedLiveTraderAccountDetail = null;
+let selectedLiveTraderAccountDetailError = null;
 let liveTraderAccountsLoadError = null;
 let activeWorkspaceTab = DEFAULT_WORKSPACE_TAB;
 let openAutoCurveStrategyId = null;
@@ -1538,7 +1540,48 @@ function normalizeLiveTraderAccounts(items) {
 
 function selectedLiveTraderAccount() {
   if (!liveTraderAccounts.length) return null;
-  return liveTraderAccounts.find((item) => item.account_id === selectedLiveTraderAccountId) || liveTraderAccounts[0] || null;
+  const summary = liveTraderAccounts.find((item) => item.account_id === selectedLiveTraderAccountId) || liveTraderAccounts[0] || null;
+  if (!summary) return null;
+  if (!selectedLiveTraderAccountDetail || selectedLiveTraderAccountDetail.account_id !== summary.account_id) return summary;
+  return {
+    ...summary,
+    ...selectedLiveTraderAccountDetail,
+    account: {
+      ...(summary.account || {}),
+      ...(selectedLiveTraderAccountDetail.account || {}),
+    },
+    summary: {
+      ...(summary.summary || {}),
+      ...(selectedLiveTraderAccountDetail.summary || {}),
+    },
+    runtime: {
+      ...(summary.runtime || {}),
+      ...(selectedLiveTraderAccountDetail.runtime || {}),
+    },
+    positions: Array.isArray(selectedLiveTraderAccountDetail.positions) ? selectedLiveTraderAccountDetail.positions : [],
+    recent_events: Array.isArray(selectedLiveTraderAccountDetail.recent_events) ? selectedLiveTraderAccountDetail.recent_events : [],
+  };
+}
+
+async function fetchLiveTraderAccountDetail(accountId) {
+  const payload = await fetchJson(`/api/live-trader-account?id=${encodeURIComponent(accountId || '')}`);
+  return normalizeLiveTraderTestnet(payload?.account);
+}
+
+async function refreshSelectedLiveTraderAccountDetail() {
+  const accountId = selectedLiveTraderAccountId;
+  if (!accountId) {
+    selectedLiveTraderAccountDetail = null;
+    selectedLiveTraderAccountDetailError = null;
+    return;
+  }
+  try {
+    selectedLiveTraderAccountDetail = await fetchLiveTraderAccountDetail(accountId);
+    selectedLiveTraderAccountDetailError = null;
+  } catch (err) {
+    selectedLiveTraderAccountDetail = null;
+    selectedLiveTraderAccountDetailError = err.message;
+  }
 }
 
 async function fetchLiveTraderAccountCurveHistory(accountId, intervalHours = 4) {
@@ -2227,6 +2270,9 @@ async function loadDashboard() {
     liveTraderTestnet = normalizeLiveTraderTestnet(liveTraderData.live_trader_testnet);
     liveTraderAccountsLoadError = liveAccountsData?._error || null;
     liveTraderAccounts = normalizeLiveTraderAccounts(liveAccountsData.accounts || []);
+    selectedLiveTraderAccountDetail = null;
+    selectedLiveTraderAccountDetailError = null;
+    await refreshSelectedLiveTraderAccountDetail();
     autoCurveHistoryCache.clear();
     liveCurveHistoryCache.clear();
     liveAccountCurveHistoryCache.clear();
@@ -3352,6 +3398,14 @@ function renderSelectedLiveAccountDetail() {
     eventsWrap.innerHTML = emptyHtml;
     return;
   }
+  if (!selectedLiveTraderAccountDetail && selectedLiveTraderAccountDetailError) {
+    const errorHtml = `<article class="candidate-card empty-card"><div class="candidate-title">账户详情加载失败</div><div class="candidate-evidence-inline">${selectedLiveTraderAccountDetailError}</div></article>`;
+    summaryWrap.innerHTML = errorHtml;
+    metaWrap.innerHTML = errorHtml;
+    positionsWrap.innerHTML = errorHtml;
+    eventsWrap.innerHTML = errorHtml;
+    return;
+  }
 
   const cards = [
     ['本金', fmtMoney(account.starting_capital_usd)],
@@ -3434,6 +3488,17 @@ async function toggleLiveAccountEnabled(accountId, enabled) {
   } catch (err) {
     window.alert(`切换账户开关失败：${err.message}`);
   }
+}
+
+async function selectLiveTraderAccount(accountId) {
+  selectedLiveTraderAccountId = accountId || null;
+  selectedLiveTraderAccountDetail = null;
+  selectedLiveTraderAccountDetailError = null;
+  renderLiveAccountsList();
+  renderSelectedLiveAccountDetail();
+  await refreshSelectedLiveTraderAccountDetail();
+  renderLiveAccountsList();
+  renderSelectedLiveAccountDetail();
 }
 
 async function openLiveAccountCurveModal(accountId) {
@@ -3658,9 +3723,7 @@ function bindEvents() {
     }
     const selectLiveAccountBtn = event.target.closest('[data-action="select-live-account"]');
     if (selectLiveAccountBtn) {
-      selectedLiveTraderAccountId = selectLiveAccountBtn.dataset.accountId || null;
-      renderLiveAccountsList();
-      renderSelectedLiveAccountDetail();
+      selectLiveTraderAccount(selectLiveAccountBtn.dataset.accountId || '');
       return;
     }
     const openBtn = event.target.closest('[data-action="open-short"]');
