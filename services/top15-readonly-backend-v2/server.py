@@ -820,7 +820,6 @@ def compact_paper_book_payload(book):
         'entry_armed_at': book.get('entry_armed_at'),
         'config': book.get('config') or {},
         'summary': book.get('summary') or {},
-        'recent_equity_curve': list(book.get('recent_equity_curve') or []),
     }
 
 
@@ -840,7 +839,6 @@ def compact_paper_trader_payload(payload):
         'last_processed_snapshot_id': payload.get('last_processed_snapshot_id'),
         'last_processed_at': payload.get('last_processed_at'),
         'summary': payload.get('summary') or {},
-        'recent_equity_curve': list(payload.get('recent_equity_curve') or []),
         'strategy_books': compact_books,
     }
 
@@ -853,7 +851,6 @@ def trim_paper_book_detail_payload(book, closed_limit=120, event_limit=120):
         'open_orders': list(book.get('open_orders') or []),
         'recent_closed_orders': list(book.get('recent_closed_orders') or [])[:max(0, int(closed_limit or 0))],
         'recent_events': list(book.get('recent_events') or [])[:max(0, int(event_limit or 0))],
-        'recent_equity_curve': list(book.get('recent_equity_curve') or []),
     }
 
 

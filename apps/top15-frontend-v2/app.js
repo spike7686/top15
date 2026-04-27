@@ -2344,10 +2344,6 @@ async function loadDashboard() {
     liveTraderAccounts = normalizeLiveTraderAccounts(liveAccountsData.accounts || []);
     selectedLiveTraderAccountDetail = null;
     selectedLiveTraderAccountDetailError = null;
-    await Promise.all([
-      refreshSelectedPaperTraderBookDetail(),
-      refreshSelectedLiveTraderAccountDetail()
-    ]);
     autoCurveHistoryCache.clear();
     liveCurveHistoryCache.clear();
     liveAccountCurveHistoryCache.clear();
@@ -2369,6 +2365,10 @@ async function loadDashboard() {
     renderAutoTraderConfigSummary();
     renderAutoTraderOrderList();
     renderAutoTraderCurveList();
+    refreshSelectedLiveTraderAccountDetail().then(() => {
+      renderLiveAccountsList();
+      renderSelectedLiveAccountDetail();
+    });
     if (openAutoCurveStrategyId === 'live:testnet') {
       openLiveCurveModal();
     } else if ((openAutoCurveStrategyId || '').startsWith('live:account:')) {
@@ -3207,7 +3207,7 @@ function renderAutoTraderOrderList() {
   }
 
   if (!selectedPaperTraderBookDetail || selectedPaperTraderBookDetail.strategy_id !== selectedBook.strategy_id) {
-    wrap.innerHTML = `${selectorHtml}<article class="candidate-card empty-card"><div class="candidate-title">正在加载 ${selectedBook.strategy_label} 明细</div><div class="candidate-evidence-inline">仅在你选中的策略上拉取订单与事件，避免首屏一次性下载全部账本。</div></article>`;
+    wrap.innerHTML = `${selectorHtml}<article class="candidate-card empty-card"><div class="candidate-title">尚未加载 ${selectedBook.strategy_label} 明细</div><div class="candidate-evidence-inline">现在不会在首屏自动拉取最近平仓列表。点击上方“查看订单明细”后，才会请求该策略的开仓、平仓和事件数据。</div></article>`;
     return;
   }
 
