@@ -674,7 +674,7 @@ def signal_allows_holding(signal):
 
 
 def strategy_uses_holdable_exit(strategy_id):
-    return str(strategy_id or "").endswith("_wide_hold")
+    return "wide_hold" in str(strategy_id or "")
 
 
 def resolve_max_hold_hours(config, trade=None):

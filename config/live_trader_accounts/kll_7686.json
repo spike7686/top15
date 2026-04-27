@@ -1,10 +1,10 @@
 {
-  "account_id": "mainnet_cxx_alpha",
-  "enabled": false,
+  "account_id": "kll",
+  "enabled": true,
   "account_label": "Binance Mainnet / Alpha",
   "binance": {
-    "api_key_env": "BINANCE_MAINNET_ALPHA_API_KEY",
-    "api_secret_env": "BINANCE_MAINNET_ALPHA_API_SECRET",
+    "api_key_env": "BINANCE_KLL_ALPHA_API_KEY",
+    "api_secret_env": "BINANCE_KLL_ALPHA_API_SECRET",
     "base_url": "https://fapi.binance.com",
     "recv_window": 5000,
     "timeout_ms": 10000,
@@ -17,7 +17,7 @@
   },
   "strategy": {
     "strategy_id": "C_overheat_fade_wide_hold_floor_10_5",
-    "max_concurrent": 3,
+    "max_concurrent": 5,
     "exit_on_signal_loss": true,
     "recreate_protection_if_missing": true,
     "block_on_orphan_positions": true,
@@ -26,12 +26,12 @@
   },
   "risk": {
     "use_exchange_margin_balance": true,
-    "fallback_equity_usd": 1000.0,
-    "risk_pct": 2.0,
-    "max_gross_pct": 200.0,
-    "leverage": 2.0,
+    "fallback_equity_usd": 200.0,
+    "risk_pct": 5.0,
+    "max_gross_pct": 1000.0,
+    "leverage": 5.0,
     "margin_buffer_pct": 95.0,
-    "min_notional_usd": 20.0
+    "min_notional_usd": 10.0
   },
   "execution": {
     "validate_entry_with_test_order": false,
@@ -40,7 +40,7 @@
     "max_entry_retries": 6
   },
   "reporting": {
-    "starting_capital_usd": 1000.0,
-    "recent_event_limit": 40
+    "starting_capital_usd": 200.0,
+    "recent_event_limit": 200
   }
 }

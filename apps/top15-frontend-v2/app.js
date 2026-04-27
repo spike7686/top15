@@ -117,6 +117,17 @@ const FALLBACK_SHADOW_STRATEGIES = {
     stop_window_max_pct: 20,
     target_r_multiple: 1.5
   },
+  C_overheat_fade_wide_hold_floor_10_5: {
+    code: 'C++++',
+    label: 'C++++ / Overheat Hold-Floor 10.5',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5',
+    description: 'C++ 的止损地板版：入场与持有逻辑不变，但结构止损小于 3% 时统一抬到 10.5%，并继续使用 1.5R 目标位；大于 20% 仍拒绝开仓。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5,
+    stop_floor_pct: 10.5
+  },
   D_extreme_overheat_fade: {
     code: 'D',
     label: 'D / Extreme Overheat Fade',

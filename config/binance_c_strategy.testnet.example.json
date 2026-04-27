@@ -15,7 +15,7 @@
     "set_symbol_leverage": true
   },
   "strategy": {
-    "strategy_id": "C_overheat_fade",
+    "strategy_id": "C_overheat_fade_wide_hold_floor_10_5",
     "max_concurrent": 3,
     "exit_on_signal_loss": true,
     "recreate_protection_if_missing": true,

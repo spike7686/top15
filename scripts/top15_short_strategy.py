@@ -44,6 +44,7 @@ STRUCTURE_STOP_MAX_PCT = float(STRUCTURE_CONFIG.get("stop_window_max_pct") or 4.
 CONTROL_STOP_WINDOW_MIN_PCT = 3.0
 CONTROL_STOP_WINDOW_MAX_PCT = 20.0
 CONTROL_TARGET_R_MULTIPLE = 1.5
+CONTROL_STOP_FLOOR_PCT = 10.5
 
 SHADOW_STRATEGY_LAYERS = OrderedDict(
     [
@@ -147,6 +148,22 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
+            "C_overheat_fade_wide_hold_floor_10_5",
+            {
+                "code": "C++++",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5",
+                "label": "C++++ / Overheat Hold-Floor 10.5",
+                "short_label": "C++++层",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
+                "description": "C++ 的止损地板版：入场与持有逻辑保持不变，但当结构止损小于 3% 时，统一抬到 10.5% 再计算 1.5R 止盈；3%~20% 保持原结构止损，大于 20% 仍拒绝。",
+            },
+        ),
+        (
             "D_extreme_overheat_fade",
             {
                 "code": "D",
@@ -247,6 +264,65 @@ def compute_short_target_price(entry_price, stop_price, target_r_multiple=1.0):
     if risk_abs <= 0:
         return None
     return entry_price - risk_abs * target_r_multiple
+
+
+def build_effective_short_stop(
+    current_price,
+    raw_stop_price,
+    raw_stop_pct,
+    *,
+    stop_floor_pct=None,
+    stop_window_min_pct=None,
+    stop_window_max_pct=None,
+    target_r_multiple=1.0,
+):
+    current_price = safe_float(current_price)
+    raw_stop_price = safe_float(raw_stop_price)
+    raw_stop_pct = safe_float(raw_stop_pct)
+    stop_floor_pct = safe_float(stop_floor_pct)
+    stop_window_min_pct = safe_float(stop_window_min_pct)
+    stop_window_max_pct = safe_float(stop_window_max_pct)
+    target_r_multiple = safe_float(target_r_multiple) or 1.0
+
+    effective_stop_price = raw_stop_price
+    effective_stop_pct = raw_stop_pct
+    stop_floor_applied = False
+    stop_floor_reason = None
+
+    if (
+        current_price not in (None, 0)
+        and raw_stop_pct is not None
+        and stop_floor_pct is not None
+        and stop_window_min_pct is not None
+        and raw_stop_pct < stop_window_min_pct
+    ):
+        effective_stop_pct = stop_floor_pct
+        effective_stop_price = current_price * (1 + stop_floor_pct / 100.0)
+        stop_floor_applied = True
+        stop_floor_reason = f"原始结构止损 {raw_stop_pct:.2f}% 小于最小窗口 {stop_window_min_pct:.1f}%，改用 {stop_floor_pct:.1f}% 固定地板。"
+
+    effective_stop_tradable = stop_tradable_for_window(
+        effective_stop_pct,
+        stop_window_min_pct,
+        stop_window_max_pct,
+    )
+    effective_target_price = compute_short_target_price(
+        current_price,
+        effective_stop_price,
+        target_r_multiple,
+    )
+    return {
+        "raw_structure_stop_price": raw_stop_price,
+        "raw_structure_stop_pct": raw_stop_pct,
+        "structure_stop_price": effective_stop_price,
+        "structure_stop_pct": effective_stop_pct,
+        "structure_target_price": effective_target_price,
+        "target_r_multiple": target_r_multiple,
+        "stop_floor_pct": stop_floor_pct,
+        "stop_floor_applied": stop_floor_applied,
+        "stop_floor_reason": stop_floor_reason,
+        "stop_tradable": effective_stop_tradable,
+    }
 
 
 def build_hold_split_state(
@@ -623,6 +699,15 @@ def build_shadow_strategy_signals(row):
     )
     wide_target_r_multiple = CONTROL_TARGET_R_MULTIPLE
     wide_target_price = compute_short_target_price(current_price, structure_stop_price, wide_target_r_multiple)
+    c_floor_stop = build_effective_short_stop(
+        current_price,
+        structure_stop_price,
+        structure_stop_pct,
+        stop_floor_pct=CONTROL_STOP_FLOOR_PCT,
+        stop_window_min_pct=CONTROL_STOP_WINDOW_MIN_PCT,
+        stop_window_max_pct=CONTROL_STOP_WINDOW_MAX_PCT,
+        target_r_multiple=wide_target_r_multiple,
+    )
     generic_weakening = (
         rank_change_30m is not None
         and overlap_score_delta_30m is not None
@@ -1016,6 +1101,66 @@ def build_shadow_strategy_signals(row):
         "stop_tradable": wide_stop_tradable,
         "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
         "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+        "overlap_score": safe_float(enriched.get("overlap_score")),
+    }
+    c_floor_blockers = []
+    if not overlap:
+        c_floor_blockers.append("当前不在交叉候选池内")
+    if overlap and not generic_weakening:
+        c_floor_blockers.append("30m 排名或交叉分尚未转弱")
+    if overlap and generic_weakening and not c_overheat:
+        c_floor_blockers.append("24h 涨幅或换手尚未进入过热区")
+    if c_triggered and c_floor_stop["raw_structure_stop_pct"] is None:
+        c_floor_blockers.append("缺少结构止损上下文")
+    if c_triggered and c_floor_stop["raw_structure_stop_pct"] is not None and not c_floor_stop["stop_tradable"]:
+        c_floor_blockers.append(
+            stop_window_blocker(
+                c_floor_stop["structure_stop_pct"],
+                CONTROL_STOP_WINDOW_MIN_PCT,
+                CONTROL_STOP_WINDOW_MAX_PCT,
+            )
+        )
+    if c_floor_stop["stop_floor_applied"] and c_floor_stop["stop_floor_reason"]:
+        c_floor_blockers = [
+            item for item in c_floor_blockers if not str(item).startswith("结构止损")
+        ]
+    layers["C_overheat_fade_wide_hold_floor_10_5"] = {
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5",
+        "strategy_code": "C++++",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5"]["description"],
+        "row": enriched,
+        "tier": "shadow",
+        "quality_score": count_true(overlap, generic_weakening, c_overheat, c_floor_stop["stop_tradable"]),
+        "triggered": c_triggered,
+        "openable": c_triggered and c_floor_stop["stop_tradable"],
+        "holdable": c_hold_state["holdable"],
+        "use_holdable_exit": True,
+        "hold_blockers": list(c_hold_state["hold_blockers"]),
+        "hold_exit_code": c_hold_state["hold_exit_code"],
+        "anchor_active": overlap,
+        "weakness_active": generic_weakening,
+        "breakout_guard": no_breakout,
+        "requires_no_breakout_exit": False,
+        "signal_summary": "C++++ 入场与 C++ 持有一致；当结构止损小于 3% 时，改用 10.5% 固定止损地板，仍按 1.5R 计算目标位。",
+        "blockers": c_floor_blockers,
+        "current_price": current_price,
+        "structure_stop_price": c_floor_stop["structure_stop_price"],
+        "structure_stop_pct": c_floor_stop["structure_stop_pct"],
+        "structure_target_price": c_floor_stop["structure_target_price"],
+        "structure_target_price_r1": standard_target_price,
+        "target_r_multiple": c_floor_stop["target_r_multiple"],
+        "front_high_price": base_signal.get("front_high_price"),
+        "atr_1h_pct": base_signal.get("atr_1h_pct"),
+        "stop_tradable": c_floor_stop["stop_tradable"],
+        "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+        "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+        "stop_floor_pct": c_floor_stop["stop_floor_pct"],
+        "stop_floor_applied": c_floor_stop["stop_floor_applied"],
+        "stop_floor_reason": c_floor_stop["stop_floor_reason"],
+        "raw_structure_stop_price": c_floor_stop["raw_structure_stop_price"],
+        "raw_structure_stop_pct": c_floor_stop["raw_structure_stop_pct"],
         "overlap_score": safe_float(enriched.get("overlap_score")),
     }
 

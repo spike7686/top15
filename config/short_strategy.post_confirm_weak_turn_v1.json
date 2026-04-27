@@ -167,6 +167,11 @@
       "label": "C++ / Overheat Hold-Split",
       "signal_name": "overheat_fade_wide_hold"
     },
+    "C_overheat_fade_wide_hold_floor_10_5": {
+      "code": "C++++",
+      "label": "C++++ / Overheat Hold-Floor 10.5",
+      "signal_name": "overheat_fade_wide_hold_floor_10_5"
+    },
     "D_extreme_overheat_fade": {
       "code": "D",
       "label": "D / Extreme Overheat Fade",

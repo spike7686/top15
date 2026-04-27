@@ -576,7 +576,7 @@ def refresh_watch_pool_cache(state, rows_by_symbol):
 
 
 def strategy_uses_holdable_exit(strategy_id):
-    return str(strategy_id or "").endswith("_wide_hold")
+    return "wide_hold" in str(strategy_id or "")
 
 
 def sort_overlap_score(signal):
