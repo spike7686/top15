@@ -128,6 +128,28 @@ const FALLBACK_SHADOW_STRATEGIES = {
     target_r_multiple: 1.5,
     stop_floor_pct: 10.5
   },
+  C_overheat_fade_wide_hold_floor_10_5_paper_copy: {
+    code: 'C++++copy',
+    label: 'C++++ copy / Overheat Hold-Floor 10.5',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_paper_copy',
+    description: '模拟盘对照组：完全复制当前 C++++，用于和冻结前高版本从当前时点起并行比较。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5,
+    stop_floor_pct: 10.5
+  },
+  C_overheat_fade_wide_hold_floor_10_5_frozen_front_high: {
+    code: 'C++++fh',
+    label: 'C++++ FH / Frozen Front High',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_frozen_front_high',
+    description: '模拟盘对照组：入场、止损地板和 strength_resume 与当前 C++++ 一致，只把前高退出改成入场冻结前高。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5,
+    stop_floor_pct: 10.5
+  },
   D_extreme_overheat_fade: {
     code: 'D',
     label: 'D / Extreme Overheat Fade',

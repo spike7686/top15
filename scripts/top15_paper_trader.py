@@ -176,6 +176,7 @@ def build_strategy_book_configs():
             "stop_window_min_pct": safe_float(layer.get("stop_window_min_pct")) or PAPER_TRADER_CONFIG["stop_window_min_pct"],
             "stop_window_max_pct": safe_float(layer.get("stop_window_max_pct")) or PAPER_TRADER_CONFIG["stop_window_max_pct"],
             "target_r_multiple": safe_float(layer.get("target_r_multiple")) or 1.0,
+            "paper_hold_exit_mode": layer.get("paper_hold_exit_mode") or "default",
         }
     return configs
 
@@ -653,6 +654,34 @@ def evaluate_exit(order, row, layer_signal, mark_price, age_hours):
     if mark_price is None:
         return None
     if layer_signal:
+        if (order.get("config") or {}).get("paper_hold_exit_mode") == "frozen_front_high":
+            rank_change_30m = safe_float(((layer_signal.get("row") or {}).get("rank_change_30m")))
+            overlap_score_delta_30m = safe_float(((layer_signal.get("row") or {}).get("overlap_score_delta_30m")))
+            rank_rebound = rank_change_30m is not None and rank_change_30m > 0
+            overlap_rebound = overlap_score_delta_30m is not None and overlap_score_delta_30m > 0
+            frozen_front_high = safe_float(order.get("front_high_price"))
+            front_high_retest = (
+                frozen_front_high not in (None, 0)
+                and mark_price not in (None, 0)
+                and mark_price >= frozen_front_high
+            )
+            if front_high_retest:
+                return {
+                    "code": "front_high_retest",
+                    "detail": "价格已回到入场冻结前高附近，结束自动单。",
+                    "exit_price": mark_price,
+                }
+            if rank_rebound or overlap_rebound:
+                blockers = []
+                if rank_rebound:
+                    blockers.append("30m 排名重新抬升，走势重新增强")
+                if overlap_rebound:
+                    blockers.append("30m overlap 共振重新上升")
+                return {
+                    "code": "strength_resume",
+                    "detail": "；".join(blockers) or "持仓条件失效，结束自动单。",
+                    "exit_price": mark_price,
+                }
         if layer_signal.get("use_holdable_exit"):
             if not layer_signal.get("holdable", True):
                 detail = "；".join(layer_signal.get("hold_blockers") or []) or "持仓条件失效，结束自动单。"
@@ -836,6 +865,7 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
             "last_seen_at": captured_at_utc,
             "unrealized_pnl_pct": unrealized_pnl_pct,
             "unrealized_pnl_usd": unrealized_pnl_usd,
+            "config": dict(config),
         }
 
         decision = evaluate_exit(next_order, row, layer_signal, mark_price, age_hours)
@@ -924,6 +954,7 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
             "strategy_id": strategy_id,
             "strategy_code": config.get("strategy_code"),
             "strategy_label": config.get("strategy_label"),
+            "config": dict(config),
             "symbol": symbol,
             "name": row.get("name"),
             "status": "open",

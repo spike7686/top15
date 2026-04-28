@@ -164,6 +164,39 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
+            "C_overheat_fade_wide_hold_floor_10_5_paper_copy",
+            {
+                "code": "C++++copy",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_paper_copy",
+                "label": "C++++ copy / Overheat Hold-Floor 10.5",
+                "short_label": "C++++copy",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
+                "description": "模拟盘对照组：完全复制当前 C++++，用于从当前时点起和冻结前高版本做并行比较。",
+            },
+        ),
+        (
+            "C_overheat_fade_wide_hold_floor_10_5_frozen_front_high",
+            {
+                "code": "C++++fh",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_frozen_front_high",
+                "label": "C++++ FH / Frozen Front High",
+                "short_label": "C++++fh",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
+                "paper_hold_exit_mode": "frozen_front_high",
+                "description": "模拟盘对照组：入场、止损地板和 strength_resume 与当前 C++++ 一致，只把前高退出改成入场冻结前高。",
+            },
+        ),
+        (
             "D_extreme_overheat_fade",
             {
                 "code": "D",
@@ -1162,6 +1195,24 @@ def build_shadow_strategy_signals(row):
         "raw_structure_stop_price": c_floor_stop["raw_structure_stop_price"],
         "raw_structure_stop_pct": c_floor_stop["raw_structure_stop_pct"],
         "overlap_score": safe_float(enriched.get("overlap_score")),
+    }
+    layers["C_overheat_fade_wide_hold_floor_10_5_paper_copy"] = {
+        **layers["C_overheat_fade_wide_hold_floor_10_5"],
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_paper_copy",
+        "strategy_code": "C++++copy",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_paper_copy"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["description"],
+        "signal_summary": "C++++ copy：完全复制当前 C++++，用于和冻结前高版本并行对照。",
+    }
+    layers["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"] = {
+        **layers["C_overheat_fade_wide_hold_floor_10_5"],
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_frozen_front_high",
+        "strategy_code": "C++++fh",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"]["description"],
+        "signal_summary": "C++++ 冻结前高：入场与 strength_resume 和当前 C++++ 一致，只把前高退出改成入场冻结前高。",
     }
 
     d_hold_state = build_hold_split_state(
