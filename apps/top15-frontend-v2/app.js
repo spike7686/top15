@@ -3376,6 +3376,18 @@ function fmtLiveEventType(value) {
   }[value] || value || '--';
 }
 
+function fmtLiveReasonCode(value) {
+  return {
+    signal_lost: '信号失效',
+    timeout: '超时退出',
+    exchange_flat_detected: '交易所侧已平',
+    front_high_retest: '回到前高',
+    breakout_resume: '突破恢复',
+    strength_resume: '重新走强',
+    signal_missing: '信号缺失'
+  }[value] || value || '--';
+}
+
 function renderLiveTraderSummary() {
   const wrap = el('liveTraderSummary');
   const status = el('liveTraderStatusText');
@@ -3504,12 +3516,24 @@ function liveTraderEventCard(event) {
   const symbol = event.symbol || '--';
   const openEntry = event.entry || {};
   const closeResp = event.close_response || {};
+  const reason = event.reason || event.close_reason;
+  const reasonCodeDetail = event.reason_code_detail || event.close_reason_code;
+  const reasonDetail = event.reason_detail || event.close_reason_detail;
+  const reasonBlockers = Array.isArray(event.reason_blockers || event.close_reason_blockers)
+    ? (event.reason_blockers || event.close_reason_blockers)
+    : [];
   const detailParts = [];
   if (toNum(openEntry.avg_price) !== null) detailParts.push(`入场 ${fmtMoney(openEntry.avg_price)}`);
   if (toNum(openEntry.executed_qty) !== null) detailParts.push(`数量 ${fmtNum(openEntry.executed_qty)}`);
   if (toNum(openEntry.notional_usd) !== null) detailParts.push(`名义 ${fmtMoney(openEntry.notional_usd)}`);
   if (toNum(closeResp.avgPrice) !== null) detailParts.push(`平仓 ${fmtMoney(closeResp.avgPrice)}`);
-  if (event.reason) detailParts.push(`原因 ${event.reason}`);
+  if (reason && reasonCodeDetail) {
+    detailParts.push(`原因 ${fmtLiveReasonCode(reason)} / ${fmtLiveReasonCode(reasonCodeDetail)}`);
+  } else if (reason) {
+    detailParts.push(`原因 ${fmtLiveReasonCode(reason)}`);
+  }
+  if (reasonDetail) detailParts.push(`说明 ${reasonDetail}`);
+  if (reasonBlockers.length) detailParts.push(`触发项 ${reasonBlockers.join('；')}`);
   if (event.error) detailParts.push(`错误 ${event.error}`);
   if (!detailParts.length && event.signal_summary) detailParts.push(event.signal_summary);
   return `

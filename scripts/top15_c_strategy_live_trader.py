@@ -677,6 +677,26 @@ def strategy_uses_holdable_exit(strategy_id):
     return "wide_hold" in str(strategy_id or "")
 
 
+def build_signal_exit_detail(signal):
+    signal = signal if isinstance(signal, dict) else {}
+    reason_code_detail = signal.get("hold_exit_code")
+    reason_blockers = [str(item) for item in (signal.get("hold_blockers") or []) if item]
+    if reason_blockers:
+        reason_detail = "；".join(reason_blockers)
+    else:
+        reason_detail = {
+            "front_high_retest": "价格已回到结构前高附近。",
+            "breakout_resume": "1h 再次出现突破结构，持仓条件失效。",
+            "strength_resume": "30m 重新走强，持仓条件失效。",
+            "signal_missing": "信号缺失，持仓条件无法继续确认。",
+        }.get(reason_code_detail)
+    return {
+        "reason_code_detail": reason_code_detail,
+        "reason_detail": reason_detail,
+        "reason_blockers": reason_blockers,
+    }
+
+
 def resolve_max_hold_hours(config, trade=None):
     strategy_cfg = (config or {}).get("strategy") or {}
     if isinstance(trade, dict):
@@ -1060,7 +1080,19 @@ def ensure_protection_orders(client, config, trade, symbol_info):
     }
 
 
-def close_trade_market(client, config, trade, short_positions, symbol_info, reason, snapshot_id):
+def close_trade_market(
+    client,
+    config,
+    trade,
+    short_positions,
+    symbol_info,
+    reason,
+    snapshot_id,
+    reason_code_detail=None,
+    reason_detail=None,
+    reason_blockers=None,
+):
+    reason_blockers = [str(item) for item in (reason_blockers or []) if item]
     qty = round_qty_down(symbol_position_qty(short_positions, trade["symbol"]), symbol_info)
     if qty <= 0:
         if config["execution"].get("cancel_all_symbol_algo_orders_on_exit", True):
@@ -1070,12 +1102,18 @@ def close_trade_market(client, config, trade, short_positions, symbol_info, reas
             {
                 "symbol": trade["symbol"],
                 "reason": reason,
+                "reason_code_detail": reason_code_detail,
+                "reason_detail": reason_detail,
+                "reason_blockers": reason_blockers,
                 "snapshot_id": snapshot_id,
             },
         )
         return {
             "symbol": trade["symbol"],
             "close_reason": reason,
+            "close_reason_code": reason_code_detail,
+            "close_reason_detail": reason_detail,
+            "close_reason_blockers": reason_blockers,
             "snapshot_id": snapshot_id,
             "close_response": None,
         }
@@ -1091,6 +1129,9 @@ def close_trade_market(client, config, trade, short_positions, symbol_info, reas
         {
             "symbol": trade["symbol"],
             "reason": reason,
+            "reason_code_detail": reason_code_detail,
+            "reason_detail": reason_detail,
+            "reason_blockers": reason_blockers,
             "snapshot_id": snapshot_id,
             "close_response": close_resp,
         },
@@ -1098,6 +1139,9 @@ def close_trade_market(client, config, trade, short_positions, symbol_info, reas
     return {
         "symbol": trade["symbol"],
         "close_reason": reason,
+        "close_reason_code": reason_code_detail,
+        "close_reason_detail": reason_detail,
+        "close_reason_blockers": reason_blockers,
         "snapshot_id": snapshot_id,
         "close_response": close_resp,
     }
@@ -1170,6 +1214,11 @@ def manage_existing_trades(client, config, state, signal_map, short_positions, a
             else:
                 should_exit_for_signal = not signal_allows_holding(signal)
         if should_exit_for_signal:
+            signal_exit_detail = build_signal_exit_detail(signal)
+            if signal is None and not signal_exit_detail.get("reason_code_detail"):
+                signal_exit_detail["reason_code_detail"] = "signal_missing"
+            if not signal_exit_detail.get("reason_detail"):
+                signal_exit_detail["reason_detail"] = "信号已不再满足继续持仓条件。"
             result = close_trade_market(
                 client,
                 config,
@@ -1178,6 +1227,9 @@ def manage_existing_trades(client, config, state, signal_map, short_positions, a
                 symbol_info,
                 "signal_lost",
                 snapshot_id,
+                reason_code_detail=signal_exit_detail.get("reason_code_detail"),
+                reason_detail=signal_exit_detail.get("reason_detail"),
+                reason_blockers=signal_exit_detail.get("reason_blockers"),
             )
             state["active_trades"].pop(symbol, None)
             closed.append(result)
