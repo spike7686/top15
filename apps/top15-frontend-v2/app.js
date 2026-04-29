@@ -150,6 +150,24 @@ const FALLBACK_SHADOW_STRATEGIES = {
     target_r_multiple: 1.5,
     stop_floor_pct: 10.5
   },
+  OI_pocket_v1_hold_12h: {
+    code: 'OIh12',
+    label: 'OI pocket V1 / Hold 12h',
+    signal_name: 'oi_pocket_v1_hold_12h',
+    description: '模拟盘原型：1d/4h 强、1h 弱、NoBreakout、turnover>=0.5、OI 1h>=1.5、funding24h>=0、近2h非 recent overlap，止损统一 clip 到 3%~12%，持有到 12h 或提前止损。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 12
+  },
+  OI_pocket_v1_soft_4h_then_12h: {
+    code: 'OIs4h',
+    label: 'OI pocket V1 / 4h Check',
+    signal_name: 'oi_pocket_v1_soft_4h_then_12h',
+    description: '模拟盘原型：entry pocket 与 OI pocket V1 相同；第 4 小时若利润不足 1% 则提前离场，否则继续持有到 12h 或提前止损。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 12
+  },
   D_extreme_overheat_fade: {
     code: 'D',
     label: 'D / Extreme Overheat Fade',
@@ -3380,6 +3398,7 @@ function fmtLiveReasonCode(value) {
   return {
     signal_lost: '信号失效',
     timeout: '超时退出',
+    weak_4h_exit: '4h 不达标',
     exchange_flat_detected: '交易所侧已平',
     front_high_retest: '回到前高',
     breakout_resume: '突破恢复',

@@ -45,6 +45,12 @@ CONTROL_STOP_WINDOW_MIN_PCT = 3.0
 CONTROL_STOP_WINDOW_MAX_PCT = 20.0
 CONTROL_TARGET_R_MULTIPLE = 1.5
 CONTROL_STOP_FLOOR_PCT = 10.5
+OI_POCKET_STOP_MIN_PCT = 3.0
+OI_POCKET_STOP_MAX_PCT = 12.0
+OI_POCKET_TURNOVER_MIN = 0.5
+OI_POCKET_OI_CHANGE_1H_MIN = 1.5
+OI_POCKET_FUNDING_MEAN_24H_MIN = 0.0
+OI_POCKET_PRICE_CHANGE_4H_MIN = 2.0
 
 SHADOW_STRATEGY_LAYERS = OrderedDict(
     [
@@ -194,6 +200,38 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
                 "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
                 "paper_hold_exit_mode": "frozen_front_high",
                 "description": "模拟盘对照组：入场、止损地板和 strength_resume 与当前 C++++ 一致，只把前高退出改成入场冻结前高。",
+            },
+        ),
+        (
+            "OI_pocket_v1_hold_12h",
+            {
+                "code": "OIh12",
+                "signal_name": "oi_pocket_v1_hold_12h",
+                "label": "OI pocket V1 / Hold 12h",
+                "short_label": "OIh12",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": OI_POCKET_STOP_MIN_PCT,
+                "stop_window_max_pct": OI_POCKET_STOP_MAX_PCT,
+                "max_hold_hours": 12.0,
+                "paper_hold_exit_mode": "hold_12h",
+                "description": "模拟盘原型：1d/4h 强、1h 弱、NoBreakout、turnover>=0.5、OI 1h>=1.5、funding24h>=0、近2h非 recent overlap，止损统一 clip 到 3%~12%，持有到 12h 或提前止损。",
+            },
+        ),
+        (
+            "OI_pocket_v1_soft_4h_then_12h",
+            {
+                "code": "OIs4h",
+                "signal_name": "oi_pocket_v1_soft_4h_then_12h",
+                "label": "OI pocket V1 / 4h Check",
+                "short_label": "OIs4h",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": OI_POCKET_STOP_MIN_PCT,
+                "stop_window_max_pct": OI_POCKET_STOP_MAX_PCT,
+                "max_hold_hours": 12.0,
+                "paper_hold_exit_mode": "soft_4h_then_12h",
+                "description": "模拟盘原型：entry pocket 与 OI pocket V1 相同；第 4 小时若利润不足 1% 则提前离场，否则继续持有到 12h 或提前止损。",
             },
         ),
         (
@@ -355,6 +393,35 @@ def build_effective_short_stop(
         "stop_floor_applied": stop_floor_applied,
         "stop_floor_reason": stop_floor_reason,
         "stop_tradable": effective_stop_tradable,
+    }
+
+
+def build_clipped_short_stop(current_price, raw_stop_pct, *, min_stop_pct, max_stop_pct):
+    current_price = safe_float(current_price)
+    raw_stop_pct = safe_float(raw_stop_pct)
+    min_stop_pct = safe_float(min_stop_pct)
+    max_stop_pct = safe_float(max_stop_pct)
+    if current_price in (None, 0) or raw_stop_pct is None or min_stop_pct is None or max_stop_pct is None:
+        return {
+            "raw_structure_stop_pct": raw_stop_pct,
+            "structure_stop_pct": None,
+            "structure_stop_price": None,
+            "stop_tradable": False,
+            "stop_clip_reason": None,
+        }
+    clipped_stop_pct = min(max(raw_stop_pct, min_stop_pct), max_stop_pct)
+    if raw_stop_pct < min_stop_pct:
+        clip_reason = f"原始结构止损 {raw_stop_pct:.2f}% 小于 {min_stop_pct:.1f}% ，上调到 {clipped_stop_pct:.1f}% 。"
+    elif raw_stop_pct > max_stop_pct:
+        clip_reason = f"原始结构止损 {raw_stop_pct:.2f}% 大于 {max_stop_pct:.1f}% ，下调到 {clipped_stop_pct:.1f}% 。"
+    else:
+        clip_reason = None
+    return {
+        "raw_structure_stop_pct": raw_stop_pct,
+        "structure_stop_pct": clipped_stop_pct,
+        "structure_stop_price": current_price * (1.0 + clipped_stop_pct / 100.0),
+        "stop_tradable": True,
+        "stop_clip_reason": clip_reason,
     }
 
 
@@ -752,6 +819,37 @@ def build_shadow_strategy_signals(row):
         and overlap_score_delta_30m is not None
         and darkhorse_score_delta_30m <= 0
         and overlap_score_delta_30m <= 0
+    )
+    trend_1d = str(enriched.get("trend_1d") or "")
+    trend_4h = str(enriched.get("trend_4h") or "")
+    trend_1h = str(enriched.get("trend_1h") or "")
+    funding_rate_mean_24h = safe_float(enriched.get("funding_rate_mean_24h"))
+    oi_change_1h_pct = safe_float(enriched.get("oi_change_1h_pct"))
+    price_change_4h_window_pct = safe_float(enriched.get("price_change_4h_window_pct"))
+    recent_overlap_candidate_2h = bool(enriched.get("recent_overlap_candidate_2h"))
+    oi_pocket_stop = build_clipped_short_stop(
+        current_price,
+        structure_stop_pct,
+        min_stop_pct=OI_POCKET_STOP_MIN_PCT,
+        max_stop_pct=OI_POCKET_STOP_MAX_PCT,
+    )
+    oi_pocket_base = (
+        trend_1d in {"Up", "StrongUp"}
+        and trend_4h in {"Up", "StrongUp"}
+        and trend_1h in {"Range", "Down", "StrongDown"}
+        and no_breakout
+    )
+    oi_pocket_triggered = (
+        oi_pocket_base
+        and turnover_ratio_24h is not None
+        and turnover_ratio_24h >= OI_POCKET_TURNOVER_MIN
+        and oi_change_1h_pct is not None
+        and oi_change_1h_pct >= OI_POCKET_OI_CHANGE_1H_MIN
+        and funding_rate_mean_24h is not None
+        and funding_rate_mean_24h >= OI_POCKET_FUNDING_MEAN_24H_MIN
+        and price_change_4h_window_pct is not None
+        and price_change_4h_window_pct >= OI_POCKET_PRICE_CHANGE_4H_MIN
+        and not recent_overlap_candidate_2h
     )
 
     layers = OrderedDict()
@@ -1213,6 +1311,84 @@ def build_shadow_strategy_signals(row):
         "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"]["signal_name"],
         "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"]["description"],
         "signal_summary": "C++++ 冻结前高：入场与 strength_resume 和当前 C++++ 一致，只把前高退出改成入场冻结前高。",
+    }
+
+    oi_pocket_blockers = []
+    if not oi_pocket_base:
+        if trend_1d not in {"Up", "StrongUp"}:
+            oi_pocket_blockers.append("trend_1d 未处于 Up/StrongUp")
+        if trend_4h not in {"Up", "StrongUp"}:
+            oi_pocket_blockers.append("trend_4h 未处于 Up/StrongUp")
+        if trend_1h not in {"Range", "Down", "StrongDown"}:
+            oi_pocket_blockers.append("trend_1h 尚未转弱")
+        if not no_breakout:
+            oi_pocket_blockers.append("1h 仍有突破结构")
+    if oi_pocket_base and (turnover_ratio_24h is None or turnover_ratio_24h < OI_POCKET_TURNOVER_MIN):
+        oi_pocket_blockers.append(f"turnover_ratio_24h 未达到 {OI_POCKET_TURNOVER_MIN:g}")
+    if oi_pocket_base and (oi_change_1h_pct is None or oi_change_1h_pct < OI_POCKET_OI_CHANGE_1H_MIN):
+        oi_pocket_blockers.append(f"oi_change_1h_pct 未达到 {OI_POCKET_OI_CHANGE_1H_MIN:g}%")
+    if oi_pocket_base and (funding_rate_mean_24h is None or funding_rate_mean_24h < OI_POCKET_FUNDING_MEAN_24H_MIN):
+        oi_pocket_blockers.append("funding_rate_mean_24h 仍为负")
+    if oi_pocket_base and (
+        price_change_4h_window_pct is None or price_change_4h_window_pct < OI_POCKET_PRICE_CHANGE_4H_MIN
+    ):
+        oi_pocket_blockers.append(f"price_change_4h_window_pct 未达到 {OI_POCKET_PRICE_CHANGE_4H_MIN:g}%")
+    if oi_pocket_base and recent_overlap_candidate_2h:
+        oi_pocket_blockers.append("近 2h 仍处于 recent overlap 窗口")
+    if oi_pocket_triggered and not oi_pocket_stop["stop_tradable"]:
+        oi_pocket_blockers.append("缺少结构止损上下文")
+    if oi_pocket_stop["stop_clip_reason"]:
+        oi_pocket_blockers.append(oi_pocket_stop["stop_clip_reason"])
+
+    oi_pocket_quality = count_true(
+        oi_pocket_base,
+        turnover_ratio_24h is not None and turnover_ratio_24h >= OI_POCKET_TURNOVER_MIN,
+        oi_change_1h_pct is not None and oi_change_1h_pct >= OI_POCKET_OI_CHANGE_1H_MIN,
+        funding_rate_mean_24h is not None and funding_rate_mean_24h >= OI_POCKET_FUNDING_MEAN_24H_MIN,
+        price_change_4h_window_pct is not None and price_change_4h_window_pct >= OI_POCKET_PRICE_CHANGE_4H_MIN,
+        not recent_overlap_candidate_2h,
+        oi_pocket_stop["stop_tradable"],
+    )
+
+    layers["OI_pocket_v1_hold_12h"] = {
+        "strategy_id": "OI_pocket_v1_hold_12h",
+        "strategy_code": "OIh12",
+        "strategy_label": shadow_layer_label("OI_pocket_v1_hold_12h"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["OI_pocket_v1_hold_12h"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["OI_pocket_v1_hold_12h"]["description"],
+        "row": enriched,
+        "tier": "shadow",
+        "quality_score": oi_pocket_quality,
+        "triggered": oi_pocket_triggered,
+        "openable": oi_pocket_triggered and oi_pocket_stop["stop_tradable"],
+        "anchor_active": True,
+        "weakness_active": True,
+        "breakout_guard": no_breakout,
+        "requires_no_breakout_exit": False,
+        "signal_summary": "OI pocket V1：1d/4h 保持强势，1h 已转弱且无 breakout，同时 turnover、OI 1h 与 funding 满足拥挤顶部过滤，模拟盘持有到 12h。",
+        "blockers": oi_pocket_blockers,
+        "current_price": current_price,
+        "structure_stop_price": oi_pocket_stop["structure_stop_price"],
+        "structure_stop_pct": oi_pocket_stop["structure_stop_pct"],
+        "structure_target_price": None,
+        "structure_target_price_r1": None,
+        "target_r_multiple": None,
+        "front_high_price": base_signal.get("front_high_price"),
+        "atr_1h_pct": base_signal.get("atr_1h_pct"),
+        "stop_tradable": oi_pocket_stop["stop_tradable"],
+        "stop_window_min_pct": OI_POCKET_STOP_MIN_PCT,
+        "stop_window_max_pct": OI_POCKET_STOP_MAX_PCT,
+        "raw_structure_stop_pct": oi_pocket_stop["raw_structure_stop_pct"],
+        "overlap_score": safe_float(enriched.get("overlap_score")),
+    }
+    layers["OI_pocket_v1_soft_4h_then_12h"] = {
+        **layers["OI_pocket_v1_hold_12h"],
+        "strategy_id": "OI_pocket_v1_soft_4h_then_12h",
+        "strategy_code": "OIs4h",
+        "strategy_label": shadow_layer_label("OI_pocket_v1_soft_4h_then_12h"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["OI_pocket_v1_soft_4h_then_12h"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["OI_pocket_v1_soft_4h_then_12h"]["description"],
+        "signal_summary": "OI pocket V1：entry pocket 不变，但第 4 小时若利润不足 1% 就提前离场，否则继续持有到 12h。",
     }
 
     d_hold_state = build_hold_split_state(

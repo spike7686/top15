@@ -712,16 +712,46 @@ def latest_paper_trader():
         }
     if isinstance(payload, dict):
         if payload.get('strategy_books'):
-            if curve_rows_by_strategy:
-                payload = {**payload}
-                payload['recent_equity_curve'] = list(curve_rows_by_strategy.get('aggregate') or payload.get('recent_equity_curve') or [])
-                patched_books = {}
-                for strategy_id, book in (payload.get('strategy_books') or {}).items():
+            payload = {**payload}
+            payload_config = {
+                **{
+                    'initial_equity_usd': safe_float(RISK_CONFIG.get('initial_equity_usd')) or 10000.0,
+                    'risk_pct': safe_float(RISK_CONFIG.get('risk_pct')) or 5.0,
+                    'max_concurrent': int(RISK_CONFIG.get('max_concurrent') or 3),
+                    'max_gross_pct': safe_float(RISK_CONFIG.get('max_gross_pct')) or 200.0,
+                    'leverage': safe_float(RISK_CONFIG.get('leverage')) or 2.0,
+                    'max_hold_hours': safe_float(STRUCTURE_CONFIG.get('max_hold_hours')) or 12.0,
+                    'stop_window_min_pct': STRUCTURE_STOP_MIN_PCT,
+                    'stop_window_max_pct': STRUCTURE_STOP_MAX_PCT,
+                    'strategy_ids': list(SHADOW_STRATEGY_LAYERS.keys()),
+                },
+                **(payload.get('config') or {}),
+            }
+            payload_config['strategy_ids'] = list(SHADOW_STRATEGY_LAYERS.keys())
+            payload['config'] = payload_config
+            payload['recent_equity_curve'] = list(
+                curve_rows_by_strategy.get('aggregate') or payload.get('recent_equity_curve') or []
+            )
+
+            source_books = payload.get('strategy_books') or {}
+            patched_books = {}
+            for strategy_id, layer in SHADOW_STRATEGY_LAYERS.items():
+                book = source_books.get(strategy_id)
+                if isinstance(book, dict):
                     patched_books[strategy_id] = {
+                        **strategy_books[strategy_id],
                         **book,
-                        'recent_equity_curve': list(curve_rows_by_strategy.get(strategy_id) or book.get('recent_equity_curve') or []),
+                        'recent_equity_curve': list(
+                            curve_rows_by_strategy.get(strategy_id) or book.get('recent_equity_curve') or []
+                        ),
                     }
-                payload['strategy_books'] = patched_books
+                else:
+                    patched_books[strategy_id] = dict(strategy_books[strategy_id])
+            payload['strategy_books'] = patched_books
+            payload['summary'] = {
+                **(payload.get('summary') or {}),
+                'strategy_book_count': len(patched_books),
+            }
             return payload
         legacy = dict(payload)
         strategy_books['A_post_confirm_weak_turn'] = {

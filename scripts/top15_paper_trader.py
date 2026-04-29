@@ -48,6 +48,8 @@ PAPER_TRADER_CONFIG = {
 RECENT_CLOSED_LIMIT = 24
 RECENT_EVENT_LIMIT = 60
 RECENT_CURVE_LIMIT = 144
+PAPER_SOFT_CHECKPOINT_HOURS = 4.0
+PAPER_SOFT_CHECKPOINT_MIN_PROFIT_PCT = 1.0
 
 ORDER_LOG_FIELDS = [
     "strategy_id",
@@ -645,6 +647,8 @@ def evaluate_exit(order, row, layer_signal, mark_price, age_hours):
         return {"code": "tp", "detail": f"命中 {target_r_multiple:g}R 目标位 {order['target_price']}", "exit_price": order["target_price"]}
     if row and mark_price is not None and safe_float(order.get("stop_price")) is not None and mark_price >= order["stop_price"]:
         return {"code": "sl", "detail": f"命中结构止损 {order['stop_price']}", "exit_price": order["stop_price"]}
+
+    paper_hold_exit_mode = (order.get("config") or {}).get("paper_hold_exit_mode") or "default"
     if not row:
         return {
             "code": "left_universe",
@@ -652,6 +656,26 @@ def evaluate_exit(order, row, layer_signal, mark_price, age_hours):
             "exit_price": safe_float(order.get("last_mark_price")) or safe_float(order.get("entry_price")),
         }
     if mark_price is None:
+        return None
+    if paper_hold_exit_mode in {"hold_12h", "soft_4h_then_12h"}:
+        if (
+            paper_hold_exit_mode == "soft_4h_then_12h"
+            and not bool(order.get("paper_soft_checkpoint_done"))
+            and age_hours >= PAPER_SOFT_CHECKPOINT_HOURS
+        ):
+            unrealized_pnl_pct = safe_float(order.get("unrealized_pnl_pct"))
+            if unrealized_pnl_pct is not None and unrealized_pnl_pct < PAPER_SOFT_CHECKPOINT_MIN_PROFIT_PCT:
+                return {
+                    "code": "weak_4h_exit",
+                    "detail": f"持仓到第 {PAPER_SOFT_CHECKPOINT_HOURS:g} 小时时利润仍低于 {PAPER_SOFT_CHECKPOINT_MIN_PROFIT_PCT:g}% ，提前离场。",
+                    "exit_price": mark_price,
+                }
+        if age_hours >= (safe_float(order.get("max_hold_hours")) or 0):
+            return {
+                "code": "timeout",
+                "detail": f"达到最长持有 {order.get('max_hold_hours')}h，按当前标记价平仓。",
+                "exit_price": mark_price,
+            }
         return None
     if layer_signal:
         if (order.get("config") or {}).get("paper_hold_exit_mode") == "frozen_front_high":
@@ -867,6 +891,14 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
             "unrealized_pnl_usd": unrealized_pnl_usd,
             "config": dict(config),
         }
+        if (
+            (config.get("paper_hold_exit_mode") or "default") == "soft_4h_then_12h"
+            and not bool(next_order.get("paper_soft_checkpoint_done"))
+            and age_hours >= PAPER_SOFT_CHECKPOINT_HOURS
+            and unrealized_pnl_pct is not None
+            and unrealized_pnl_pct >= PAPER_SOFT_CHECKPOINT_MIN_PROFIT_PCT
+        ):
+            next_order["paper_soft_checkpoint_done"] = True
 
         decision = evaluate_exit(next_order, row, layer_signal, mark_price, age_hours)
         if not decision:
@@ -949,6 +981,12 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
 
         stop_pct = safe_float(signal.get("structure_stop_pct"))
         target_r_multiple = safe_float(signal.get("target_r_multiple")) or safe_float(config.get("target_r_multiple")) or 1.0
+        target_price = signal.get("structure_target_price") or signal.get("structure_target_price_r1")
+        target_text = (
+            f"止盈 {target_r_multiple:g}R"
+            if safe_float(target_price) is not None
+            else "无固定止盈"
+        )
         order = {
             "id": build_order_id(strategy_id, symbol, snapshot_id),
             "strategy_id": strategy_id,
@@ -969,7 +1007,7 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
             "margin_usd": plan["margin_usd"],
             "leverage": config.get("leverage"),
             "stop_price": signal.get("structure_stop_price"),
-            "target_price": signal.get("structure_target_price") or signal.get("structure_target_price_r1"),
+            "target_price": target_price,
             "target_r_multiple": target_r_multiple,
             "stop_pct": signal.get("structure_stop_pct"),
             "front_high_price": signal.get("front_high_price"),
@@ -979,9 +1017,10 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
             "signal_summary": signal.get("signal_summary"),
             "open_reason": (
                 f"{config.get('strategy_label')} ｜ {signal.get('signal_summary')} ｜ "
-                f"结构止损 {stop_pct:.4f}% ｜ 止盈 {target_r_multiple:g}R ｜ 风险预算 {config.get('risk_pct')}% ｜ "
+                f"结构止损 {stop_pct:.4f}% ｜ {target_text} ｜ 风险预算 {config.get('risk_pct')}% ｜ "
                 f"名义仓位 {plan['size_usd']:.2f} USD"
             ),
+            "paper_soft_checkpoint_done": False,
             "last_seen_snapshot_id": snapshot_id,
             "last_seen_at": captured_at_utc,
             "unrealized_pnl_pct": 0.0,
