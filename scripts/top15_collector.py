@@ -130,6 +130,28 @@ def summarize_description(desc: str, limit=220) -> str:
     return cut + "…"
 
 
+def resolve_binance_perp_symbol(symbol: str, futures_by_symbol: dict):
+    symbol = str(symbol or "").upper()
+    if not symbol:
+        return None, None
+
+    for quote in BINANCE_PERP_QUOTES:
+        exact = f"{symbol}{quote}"
+        if exact in futures_by_symbol:
+            return exact, futures_by_symbol[exact]
+
+    # Binance perpeturals sometimes use a numeric contract multiplier prefix,
+    # for example spot LUNC -> futures 1000LUNCUSDT.
+    for quote in BINANCE_PERP_QUOTES:
+        pattern = re.compile(rf"^\d+{re.escape(symbol)}{re.escape(quote)}$")
+        matches = [pair for pair in futures_by_symbol.keys() if pattern.match(pair)]
+        if len(matches) == 1:
+            pair = matches[0]
+            return pair, futures_by_symbol[pair]
+
+    return None, None
+
+
 def safe_float(v):
     try:
         if v is None or v == "":
@@ -1831,14 +1853,7 @@ def main():
                 "trade_activity_24h": None,
             })
 
-        perp_match = None
-        matched_perp_symbol = None
-        for q in BINANCE_PERP_QUOTES:
-            pair = f"{symbol}{q}"
-            if pair in bn_futures_by_symbol:
-                matched_perp_symbol = pair
-                perp_match = bn_futures_by_symbol[pair]
-                break
+        matched_perp_symbol, perp_match = resolve_binance_perp_symbol(symbol, bn_futures_by_symbol)
         perp_summary, perp_sync = sync_symbol_perp(symbol, matched_perp_symbol, perp_match, run_dt, run_id, captured_at_cst)
         perp_sync_summary.append(perp_sync)
         base.update(perp_summary)

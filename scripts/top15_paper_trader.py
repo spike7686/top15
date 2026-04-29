@@ -968,6 +968,10 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
         row = signal.get("row") or {}
         if row.get("paper_trader_watch_only"):
             continue
+        if row.get("binance_perp_status") not in {"matched", "matched_partial_error"}:
+            continue
+        if not row.get("binance_perp_symbol"):
+            continue
         symbol = row.get("symbol")
         if not symbol or symbol in closed_symbols:
             continue

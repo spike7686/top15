@@ -5,6 +5,7 @@ import csv
 import fcntl
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,14 @@ def safe_float(value):
     except (TypeError, ValueError):
         return None
     return num if num == num else None
+
+
+def uses_prefixed_perp_contract(spot_symbol, perp_symbol):
+    spot_symbol = str(spot_symbol or "").upper()
+    perp_symbol = str(perp_symbol or "").upper()
+    if not spot_symbol or not perp_symbol:
+        return False
+    return bool(re.match(rf"^\d+{re.escape(spot_symbol)}(?:USDT|USDC)$", perp_symbol))
 
 
 def now_utc_iso():
@@ -583,6 +592,7 @@ def build_candidate_records(config, rows):
         signal = refresh_signal_for_runtime(signal)
         signal["perp_symbol"] = symbol
         signal["perp_last_price"] = safe_float(row.get("perp_last_price"))
+        signal["runtime_requires_price_rescale"] = uses_prefixed_perp_contract(row.get("symbol"), symbol)
         signal_map[symbol] = signal
         if signal.get("openable"):
             candidates.append(signal)
@@ -1352,7 +1362,12 @@ def open_new_trades(
                 raise RuntimeError(last_entry_error or f"{symbol} 未能生成有效入场回报")
             executed_qty = safe_float(entry_resp.get("executedQty")) or safe_float(entry_resp.get("origQty")) or current_qty
             entry_price = safe_float(entry_resp.get("avgPrice")) or plan["market_price"]
-            stop_price = round_price_up(signal["structure_stop_price"], symbol_info)
+            stop_pct = safe_float(signal.get("structure_stop_pct"))
+            if bool(signal.get("runtime_requires_price_rescale")) and entry_price not in (None, 0) and stop_pct not in (None, 0):
+                raw_stop_price = entry_price * (1.0 + stop_pct / 100.0)
+            else:
+                raw_stop_price = signal.get("structure_stop_price")
+            stop_price = round_price_up(raw_stop_price, symbol_info)
             risk_abs = stop_price - entry_price if entry_price is not None else None
             target_r_multiple = safe_float(signal.get("target_r_multiple")) or 1.0
             target_price = (
