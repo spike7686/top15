@@ -1813,7 +1813,26 @@ function getNormalizedStrategyBooks(data = normalizeServerPaperTrader(serverPape
 function getNormalizedWaveStrategyBooks(data = normalizeWavePaperTrader(wavePaperTrader)) {
   return Object.values(data.strategy_books || {})
     .filter(Boolean)
-    .sort((a, b) => String(a.strategy_code || '').localeCompare(String(b.strategy_code || '')));
+    .sort((a, b) => {
+      const riskA = toNum(a.config?.risk_pct);
+      const riskB = toNum(b.config?.risk_pct);
+      if (riskA != null && riskB != null && riskA !== riskB) return riskA - riskB;
+      return String(a.strategy_code || '').localeCompare(String(b.strategy_code || ''));
+    });
+}
+
+function joinDistinctConfigValues(books = [], projector, formatter = (value) => String(value)) {
+  const values = [];
+  const seen = new Set();
+  books.forEach((book) => {
+    const raw = projector(book);
+    if (raw == null || raw === '') return;
+    const key = String(raw);
+    if (seen.has(key)) return;
+    seen.add(key);
+    values.push(formatter(raw));
+  });
+  return values.join(' / ');
 }
 
 function pickDefaultPaperTraderBookId(books = []) {
@@ -3661,6 +3680,17 @@ function renderWavePaperTraderConfigSummary() {
   const config = data.config || {};
   const books = getNormalizedWaveStrategyBooks(data);
   const preview = Array.isArray(data.runtime?.candidate_preview) ? data.runtime.candidate_preview.slice(0, 3) : [];
+  const riskDisplay = fmtPct(config.risk_pct) !== '--'
+    ? fmtPct(config.risk_pct)
+    : (joinDistinctConfigValues(books, (book) => book.config?.risk_pct, (value) => fmtPct(value)) || '--');
+  const maxConcurrentDisplay = (
+    config.max_concurrent
+    ?? joinDistinctConfigValues(books, (book) => book.config?.max_concurrent)
+    ?? '--'
+  );
+  const maxGrossDisplay = fmtPct(config.max_gross_pct) !== '--'
+    ? fmtPct(config.max_gross_pct)
+    : (joinDistinctConfigValues(books, (book) => book.config?.max_gross_pct, (value) => fmtPct(value)) || '--');
   wrap.innerHTML = `
     <article class="candidate-card auto-config-card">
       <div class="candidate-main">
@@ -3678,9 +3708,9 @@ function renderWavePaperTraderConfigSummary() {
       </div>
       <div class="candidate-meta">
         <span>总研究本金：${fmtMoney(data.summary?.starting_equity_usd)}</span>
-        <span>单笔风险：${fmtPct(config.risk_pct)}</span>
-        <span>最大并发：${config.max_concurrent ?? '--'}</span>
-        <span>最大总敞口：${fmtPct(config.max_gross_pct)}</span>
+        <span>单笔风险：${riskDisplay}</span>
+        <span>最大并发：${maxConcurrentDisplay}</span>
+        <span>最大总敞口：${maxGrossDisplay}</span>
         <span>杠杆：${fmtNum(config.leverage)}x</span>
         <span>入场轮询：${config.entry_interval_minutes ? `${config.entry_interval_minutes}m` : '--'}</span>
         <span>持仓管理：${config.manage_interval_minutes ? `${config.manage_interval_minutes}m` : '--'}</span>
