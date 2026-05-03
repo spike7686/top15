@@ -27,9 +27,11 @@ ORDERS_CSV_PATH = DATA_DIR / "orders.csv"
 LOCK_PATH = DATA_DIR / ".lock"
 ARCHIVE_DIR = DATA_DIR / "archive"
 
-LAB_DIR = WORKDIR / "projects" / "local-cpp-stop-lab"
-if str(LAB_DIR) not in sys.path:
-    sys.path.insert(0, str(LAB_DIR))
+VENDORED_LAB_DIR = WORKDIR / "scripts" / "wave_proto_runtime"
+RESEARCH_LAB_DIR = WORKDIR / "projects" / "local-cpp-stop-lab"
+for module_dir in (RESEARCH_LAB_DIR, VENDORED_LAB_DIR):
+    if module_dir.exists() and str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
 
 import run_wave_short_perp_context_loader as research_ctx
 import run_wave_short_1h_oi_failure_swing_matrix as research_matrix
