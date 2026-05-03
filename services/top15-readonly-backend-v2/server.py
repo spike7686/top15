@@ -19,6 +19,7 @@ from top15_short_strategy import SHADOW_STRATEGY_LAYERS, compute_short_setup_fie
 
 DATA_DIR = WORKDIR / 'data' / 'top15_tracker'
 FRONTEND_DIR = WORKDIR / 'apps' / 'top15-frontend-v2'
+WAVE_PAPER_TRADER_DIR = DATA_DIR / 'wave_paper_trader'
 LIVE_TRADER_TESTNET_DIR = DATA_DIR / 'live_trader' / 'c_strategy_testnet'
 LIVE_TRADER_ACCOUNTS_DIR = DATA_DIR / 'live_trader' / 'accounts'
 SHORT_STRATEGY_CONFIG_PATH = WORKDIR / 'config' / 'short_strategy.post_confirm_weak_turn_v1.json'
@@ -345,6 +346,84 @@ def load_paper_trader_recent_curves(per_strategy_limit=96, aggregate_limit=144):
 
 def load_paper_trader_curve_history(strategy_id='aggregate', interval_hours=4):
     path = DATA_DIR / 'paper_trader' / 'equity_curve.csv'
+    if not path.exists():
+        return []
+
+    try:
+        bucket_ms = max(1, int(float(interval_hours or 4) * 60 * 60 * 1000))
+    except (TypeError, ValueError):
+        bucket_ms = 4 * 60 * 60 * 1000
+
+    rows = []
+    try:
+        with path.open('r', encoding='utf-8', newline='') as handle:
+            for row in csv.DictReader(handle):
+                if not isinstance(row, dict):
+                    continue
+                if (row.get('strategy_id') or '') != strategy_id:
+                    continue
+                captured_at = row.get('captured_at_utc')
+                dt = parse_dt(captured_at)
+                if not dt:
+                    continue
+                rows.append({
+                    **row,
+                    '_ts_ms': int(dt.timestamp() * 1000),
+                })
+    except Exception:
+        return []
+
+    rows.sort(key=lambda item: item['_ts_ms'])
+    if not rows:
+        return []
+
+    sampled = []
+    current_bucket = None
+    last_in_bucket = None
+    for row in rows:
+        bucket = row['_ts_ms'] // bucket_ms
+        if current_bucket is None:
+            current_bucket = bucket
+        if bucket != current_bucket:
+            if last_in_bucket is not None:
+                sampled.append({key: value for key, value in last_in_bucket.items() if key != '_ts_ms'})
+            current_bucket = bucket
+        last_in_bucket = row
+
+    if last_in_bucket is not None:
+        sampled.append({key: value for key, value in last_in_bucket.items() if key != '_ts_ms'})
+
+    return sampled
+
+
+def load_runtime_recent_curves(runtime_dir: Path, per_strategy_limit=96, aggregate_limit=144):
+    path = runtime_dir / 'equity_curve.csv'
+    curves = {}
+    if not path.exists():
+        return curves
+
+    try:
+        with path.open('r', encoding='utf-8', newline='') as handle:
+            rows = [dict(row) for row in csv.DictReader(handle) if isinstance(row, dict)]
+    except Exception:
+        return curves
+
+    for row in rows:
+        strategy_id = row.get('strategy_id')
+        if not strategy_id:
+            continue
+        curves.setdefault(strategy_id, []).append(row)
+
+    for strategy_id, items in list(curves.items()):
+        items.sort(key=lambda item: item.get('captured_at_utc') or '')
+        limit = aggregate_limit if strategy_id == 'aggregate' else per_strategy_limit
+        curves[strategy_id] = items[-limit:]
+
+    return curves
+
+
+def load_runtime_curve_history(runtime_dir: Path, strategy_id='aggregate', interval_hours=4):
+    path = runtime_dir / 'equity_curve.csv'
     if not path.exists():
         return []
 
@@ -837,6 +916,75 @@ def latest_paper_trader():
     }
 
 
+def latest_wave_paper_trader():
+    payload = read_json(WAVE_PAPER_TRADER_DIR / 'latest.json', default=None)
+    curve_rows_by_strategy = load_runtime_recent_curves(WAVE_PAPER_TRADER_DIR)
+    if isinstance(payload, dict):
+        patched = {**payload}
+        patched['recent_equity_curve'] = list(
+            curve_rows_by_strategy.get('aggregate') or patched.get('recent_equity_curve') or []
+        )
+
+        source_books = payload.get('strategy_books') or {}
+        patched_books = {}
+        for strategy_id, book in source_books.items():
+            if not isinstance(book, dict):
+                continue
+            patched_books[strategy_id] = {
+                **book,
+                'recent_equity_curve': list(
+                    curve_rows_by_strategy.get(strategy_id) or book.get('recent_equity_curve') or []
+                ),
+            }
+        patched['strategy_books'] = patched_books
+        patched['summary'] = {
+            **(patched.get('summary') or {}),
+            'strategy_book_count': len(patched_books),
+        }
+        patched.setdefault('ok', True)
+        patched.setdefault('version', 'wave_paper_trader_v1')
+        patched.setdefault('config', {})
+        patched.setdefault('open_orders', [])
+        patched.setdefault('recent_closed_orders', [])
+        patched.setdefault('recent_events', [])
+        return patched
+
+    return {
+        'ok': True,
+        'version': 'wave_paper_trader_v1',
+        'config': {},
+        'last_processed_snapshot_id': None,
+        'last_processed_at': None,
+        'summary': {
+            'starting_equity_usd': 0.0,
+            'equity_usd': 0.0,
+            'realized_pnl_usd': 0.0,
+            'unrealized_pnl_usd': 0.0,
+            'open_gross_usd': 0.0,
+            'gross_cap_usd': 0.0,
+            'open_count': 0,
+            'closed_count': 0,
+            'win_count': 0,
+            'loss_count': 0,
+            'total_realized_r': 0.0,
+            'win_rate': None,
+            'total_order_count': 0,
+            'equity_peak_usd': 0.0,
+            'max_drawdown_usd': 0.0,
+            'max_drawdown_pct': 0.0,
+            'equity_change_last_snapshot_usd': 0.0,
+            'equity_change_last_snapshot_pct': 0.0,
+            'curve_point_count': 0,
+            'strategy_book_count': 0,
+        },
+        'open_orders': [],
+        'recent_closed_orders': [],
+        'recent_events': [],
+        'recent_equity_curve': list(curve_rows_by_strategy.get('aggregate') or []),
+        'strategy_books': {},
+    }
+
+
 def compact_paper_book_payload(book):
     if not isinstance(book, dict):
         return book
@@ -869,6 +1017,7 @@ def compact_paper_trader_payload(payload):
         'last_processed_snapshot_id': payload.get('last_processed_snapshot_id'),
         'last_processed_at': payload.get('last_processed_at'),
         'summary': payload.get('summary') or {},
+        'runtime': payload.get('runtime') or {},
         'strategy_books': compact_books,
     }
 
@@ -1117,6 +1266,43 @@ class Handler(BaseHTTPRequestHandler):
                 'strategy_id': strategy_id,
                 'interval_hours': safe_float(interval_hours) or 4.0,
                 'rows': load_paper_trader_curve_history(strategy_id=strategy_id, interval_hours=interval_hours),
+            })
+
+        if path == '/api/wave-paper-trader':
+            payload = compact_paper_trader_payload(latest_wave_paper_trader())
+            return json_response(self, {
+                'ok': True,
+                'wave_paper_trader': payload,
+            })
+
+        if path == '/api/wave-paper-trader-book':
+            strategy_id = ((query.get('strategy_id') or [''])[0] or '').strip()
+            payload = latest_wave_paper_trader() or {}
+            books = payload.get('strategy_books') or {}
+            book = books.get(strategy_id)
+            if not isinstance(book, dict):
+                return json_response(self, {
+                    'ok': False,
+                    'error': f'strategy book not found: {strategy_id}',
+                }, status=404)
+            return json_response(self, {
+                'ok': True,
+                'strategy_id': strategy_id,
+                'book': trim_paper_book_detail_payload(book, closed_limit=120, event_limit=120),
+            })
+
+        if path == '/api/wave-paper-trader-curve':
+            strategy_id = ((query.get('strategy_id') or ['aggregate'])[0] or 'aggregate').strip()
+            interval_hours = (query.get('interval_hours') or ['4'])[0]
+            return json_response(self, {
+                'ok': True,
+                'strategy_id': strategy_id,
+                'interval_hours': safe_float(interval_hours) or 4.0,
+                'rows': load_runtime_curve_history(
+                    WAVE_PAPER_TRADER_DIR,
+                    strategy_id=strategy_id,
+                    interval_hours=interval_hours,
+                ),
             })
 
         if path == '/api/live-trader-testnet':

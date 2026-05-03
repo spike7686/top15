@@ -290,6 +290,36 @@
               </div>
             </div>
           </section>
+
+          <section class="panel auto-trader-panel">
+            <div class="panel-header">
+              <div>
+                <h2>1h 波段空头虚拟盘</h2>
+                <p>独立于当前 C/B/D 快节奏模拟盘，专门承载新的 1h 波段空研究策略与对照组。</p>
+              </div>
+              <div class="header-actions">
+                <p id="wavePaperTraderStatusText">等待 1h 波段虚拟盘首个快照…</p>
+              </div>
+            </div>
+            <div id="wavePaperTraderSummary" class="paper-summary-grid auto-summary-grid"></div>
+            <div id="wavePaperTraderConfigSummary" class="candidate-list auto-meta-list"></div>
+            <div class="auto-readonly-grid">
+              <div>
+                <div class="section-mini-head">
+                  <h3>订单日志</h3>
+                  <p>最近的自动开平仓与当前持仓</p>
+                </div>
+                <div id="wavePaperTraderOrderList" class="candidate-list"></div>
+              </div>
+              <div>
+                <div class="section-mini-head">
+                  <h3>收益图入口</h3>
+                  <p>点击按钮后渲染全历史收益率曲线，按 4 小时采样一个点</p>
+                </div>
+                <div id="wavePaperTraderCurveList" class="candidate-list"></div>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
       </div>
