@@ -158,7 +158,7 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             {
                 "code": "C++++",
                 "signal_name": "overheat_fade_wide_hold_floor_10_5",
-                "label": "P0 / C++++ Baseline",
+                "label": "C++++ / Overheat Hold-Floor 10.5",
                 "short_label": "C++++层",
                 "entry_filters": [],
                 "requires_no_breakout_exit": False,
@@ -209,10 +209,10 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
         (
             "C_overheat_fade_wide_hold_floor_10_5_paper_copy",
             {
-                "code": "C++++copy",
+                "code": "P0",
                 "signal_name": "overheat_fade_wide_hold_floor_10_5_paper_copy",
-                "label": "C++++ copy / Overheat Hold-Floor 10.5",
-                "short_label": "C++++copy",
+                "label": "P0 / C++++ Baseline",
+                "short_label": "P0",
                 "entry_filters": [],
                 "requires_no_breakout_exit": False,
                 "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
@@ -1352,11 +1352,11 @@ def build_shadow_strategy_signals(row):
     layers["C_overheat_fade_wide_hold_floor_10_5_paper_copy"] = {
         **layers["C_overheat_fade_wide_hold_floor_10_5"],
         "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_paper_copy",
-        "strategy_code": "C++++copy",
+        "strategy_code": "P0",
         "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_paper_copy"),
         "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["signal_name"],
         "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["description"],
-        "signal_summary": "C++++ copy：完全复制当前 C++++，用于和冻结前高版本并行对照。",
+        "signal_summary": "P0 / C++++ Baseline：完全复制当前 C++++，作为从同一时间起跑的全新基线对照组。",
     }
     layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"] = {
         **layers["C_overheat_fade_wide_hold_floor_10_5"],
