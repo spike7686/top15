@@ -288,6 +288,8 @@ def default_state():
         "version": "c_strategy_testnet_v1",
         "last_processed_snapshot_id": None,
         "last_run_at": None,
+        "loss_streak": 0,
+        "loss_pause_until": None,
         "active_trades": {},
     }
 
@@ -302,6 +304,8 @@ def load_state():
         for symbol, item in (state.get("active_trades") or {}).items()
         if isinstance(item, dict)
     }
+    state["loss_streak"] = int(safe_float(state.get("loss_streak")) or 0)
+    state["loss_pause_until"] = state.get("loss_pause_until")
     return state
 
 
@@ -800,6 +804,8 @@ def build_live_trader_payload(config, state, snapshot_id, runtime, summary):
         "enabled": bool(config.get("enabled")),
         "snapshot_id": snapshot_id,
         "last_run_at": (state or {}).get("last_run_at"),
+        "loss_streak": int(safe_float((state or {}).get("loss_streak")) or 0),
+        "loss_pause_until": (state or {}).get("loss_pause_until"),
         "starting_capital_usd": starting_capital_usd,
         "account": {
             "equity_usd": equity_usd,
@@ -850,6 +856,8 @@ def build_disabled_stale_payload(config, state, snapshot_id, summary, previous_p
         "enabled": False,
         "snapshot_id": snapshot_id,
         "last_run_at": (state or {}).get("last_run_at"),
+        "loss_streak": int(safe_float((state or {}).get("loss_streak")) or 0),
+        "loss_pause_until": (state or {}).get("loss_pause_until"),
         "starting_capital_usd": starting_capital_usd,
         "account": {
             "equity_usd": safe_float(account_prev.get("equity_usd")),
@@ -895,6 +903,46 @@ def resolve_runtime_stop_window(signal_map):
     for signal in (signal_map or {}).values():
         return resolve_signal_stop_window(signal)
     return short_strategy_module.STRUCTURE_STOP_MIN_PCT, short_strategy_module.STRUCTURE_STOP_MAX_PCT
+
+
+def current_strategy_layer(strategy_id):
+    return (short_strategy_module.SHADOW_STRATEGY_LAYERS or {}).get(strategy_id) or {}
+
+
+def strategy_pause_after_losses(config):
+    strategy_id = ((config or {}).get("strategy") or {}).get("strategy_id")
+    layer = current_strategy_layer(strategy_id)
+    return int(safe_float(layer.get("paper_loss_pause_after_losses")) or 0)
+
+
+def strategy_pause_minutes(config):
+    strategy_id = ((config or {}).get("strategy") or {}).get("strategy_id")
+    layer = current_strategy_layer(strategy_id)
+    return int(safe_float(layer.get("paper_loss_pause_minutes")) or 0)
+
+
+def strategy_structure_filter(config):
+    strategy_id = ((config or {}).get("strategy") or {}).get("strategy_id")
+    layer = current_strategy_layer(strategy_id)
+    return str(layer.get("paper_structure_filter") or "none")
+
+
+def structure_filter_blocks_live(signal, config):
+    filter_name = strategy_structure_filter(config)
+    row = (signal or {}).get("row") or {}
+    pos_12h_range = safe_float(row.get("structure_pos_12h_range"))
+    pos_24h_range = safe_float(row.get("structure_pos_24h_range"))
+    if filter_name == "none":
+        return None
+    if filter_name == "pos12_range_le_0_5":
+        if pos_12h_range is not None and pos_12h_range <= 0.5:
+            return "价格已落入近 12h 区间下半区，跳过新开空。"
+        return None
+    if filter_name == "pos24_range_le_0_5":
+        if pos_24h_range is not None and pos_24h_range <= 0.5:
+            return "价格已落入近 24h 区间下半区，跳过新开空。"
+        return None
+    return None
 
 
 class FatalTradeOpenError(RuntimeError):
@@ -1157,6 +1205,41 @@ def close_trade_market(
     }
 
 
+def update_loss_pause_state(config, state, close_result):
+    close_resp = (close_result or {}).get("close_response") or {}
+    trade_symbol = (close_result or {}).get("symbol")
+    trade = ((state or {}).get("active_trades") or {}).get(trade_symbol) or {}
+    entry = trade.get("entry") or {}
+    entry_price = safe_float(entry.get("avg_price"))
+    close_price = safe_float(close_resp.get("avgPrice"))
+    qty = safe_float(entry.get("executed_qty"))
+    if entry_price in (None, 0) or close_price is None or qty is None:
+        return
+
+    realized_pnl_usd = (entry_price - close_price) * qty
+    if realized_pnl_usd >= 0:
+        state["loss_streak"] = 0
+        return
+
+    next_loss_streak = int(safe_float(state.get("loss_streak")) or 0) + 1
+    state["loss_streak"] = next_loss_streak
+    pause_after_losses = strategy_pause_after_losses(config)
+    pause_minutes = strategy_pause_minutes(config)
+    if pause_after_losses > 0 and pause_minutes > 0 and next_loss_streak >= pause_after_losses:
+        pause_until = datetime.now(timezone.utc) + timedelta(minutes=pause_minutes)
+        state["loss_pause_until"] = pause_until.isoformat()
+        state["loss_streak"] = 0
+        create_journal_event(
+            "loss_pause_armed",
+            {
+                "snapshot_id": close_result.get("snapshot_id"),
+                "pause_after_losses": pause_after_losses,
+                "pause_minutes": pause_minutes,
+                "loss_pause_until": state["loss_pause_until"],
+            },
+        )
+
+
 def active_protection_complete(open_algo_orders, trade):
     client_ids = {item.get("clientAlgoId") for item in open_algo_orders or []}
     stop_id = ((trade.get("protection") or {}).get("stop") or {}).get("client_algo_id")
@@ -1212,6 +1295,7 @@ def manage_existing_trades(client, config, state, signal_map, short_positions, a
                 "timeout",
                 snapshot_id,
             )
+            update_loss_pause_state(config, state, result)
             state["active_trades"].pop(symbol, None)
             closed.append(result)
             continue
@@ -1241,6 +1325,7 @@ def manage_existing_trades(client, config, state, signal_map, short_positions, a
                 reason_detail=signal_exit_detail.get("reason_detail"),
                 reason_blockers=signal_exit_detail.get("reason_blockers"),
             )
+            update_loss_pause_state(config, state, result)
             state["active_trades"].pop(symbol, None)
             closed.append(result)
             continue
@@ -1277,11 +1362,28 @@ def open_new_trades(
     max_entry_retries = max(1, int(safe_float(config["execution"].get("max_entry_retries")) or 6))
     remaining_slots = max(0, int(config["strategy"].get("max_concurrent") or 0) - metrics["open_count"])
     remaining_gross = metrics["remaining_gross_usd"]
+    pause_until = parse_dt(state.get("loss_pause_until"))
+    now_dt = datetime.now(timezone.utc)
+    if pause_until and now_dt < pause_until:
+        return opened, failed
     for signal in candidates:
         if remaining_slots <= 0 or remaining_gross <= 0:
             break
         symbol = signal.get("perp_symbol")
         if not symbol or symbol in active_symbols or symbol in short_positions:
+            continue
+        blocked_reason = structure_filter_blocks_live(signal, config)
+        if blocked_reason:
+            create_journal_event(
+                "trade_open_blocked",
+                {
+                    "symbol": symbol,
+                    "snapshot_id": snapshot_id,
+                    "reason": "structure_filter_blocked",
+                    "detail": blocked_reason,
+                },
+            )
+            failed.append({"symbol": symbol, "reason": blocked_reason})
             continue
         symbol_info = symbol_info_map.get(symbol)
         if not symbol_info or symbol_info.get("status") != "TRADING":
@@ -1603,6 +1705,10 @@ def main():
         if orphan_symbols and config["strategy"].get("block_on_orphan_positions", True):
             summary["warnings"].append(f"检测到交易所孤儿仓位：{','.join(orphan_symbols)}，本轮阻止新开仓。")
         else:
+            pause_until = parse_dt(state.get("loss_pause_until"))
+            now_dt = datetime.now(timezone.utc)
+            if pause_until and now_dt < pause_until:
+                summary["warnings"].append(f"处于连亏冷静期，暂停新开仓至 {pause_until.isoformat()}")
             should_process_snapshot = args.reprocess_snapshot or state.get("last_processed_snapshot_id") != snapshot_id
             if allow_new_entries and should_process_snapshot:
                 summary["opened"], summary["failed"] = open_new_trades(
