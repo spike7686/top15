@@ -207,6 +207,29 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
+            "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3",
+            {
+                "code": "P3",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3",
+                "label": "P3 / C++++ Pause + Pos12 + LocalFade",
+                "short_label": "P3",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
+                "paper_loss_pause_after_losses": 3,
+                "paper_loss_pause_minutes": 60,
+                "paper_structure_filter": "pos12_range_le_0_5",
+                "paper_local_regime_guard": "profit_fading_reentry",
+                "paper_local_cluster_gap_minutes": 90,
+                "paper_local_peak_min_pct": 2.0,
+                "paper_local_decay_trigger_pct": 1.0,
+                "description": "C++++ 新候选版：在 P2 的 3 连亏暂停 60 分钟 + Pos12 基础上，再加入同币种本地衰竭保护；若同一局部波段已兑现过足够利润且利润开始回吐，则暂停该币后续同簇重入。",
+            },
+        ),
+        (
             "C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0",
             {
                 "code": "P0",
@@ -1375,6 +1398,15 @@ def build_shadow_strategy_signals(row):
         "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"]["signal_name"],
         "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"]["description"],
         "signal_summary": "C++++ + 3 连亏暂停 60m + Pos12：在当前 C++++ 基础上，叠加全局暂停和 12h 区间下半区禁开过滤。",
+    }
+    layers["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3"] = {
+        **layers["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"],
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3",
+        "strategy_code": "P3",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3"]["description"],
+        "signal_summary": "C++++ + 3 连亏暂停 60m + Pos12 + LocalFade：在 P2 基础上，若同币种局部波段利润已进入回吐区，则暂停该币同簇重入。",
     }
     layers["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"] = {
         **layers["C_overheat_fade_wide_hold_floor_10_5"],

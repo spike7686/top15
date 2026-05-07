@@ -2,7 +2,7 @@
 import csv
 import json
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -182,6 +182,10 @@ def build_strategy_book_configs():
             "paper_loss_pause_after_losses": int(safe_float(layer.get("paper_loss_pause_after_losses")) or 0),
             "paper_loss_pause_minutes": int(safe_float(layer.get("paper_loss_pause_minutes")) or 0),
             "paper_structure_filter": layer.get("paper_structure_filter") or "none",
+            "paper_local_regime_guard": layer.get("paper_local_regime_guard") or "none",
+            "paper_local_cluster_gap_minutes": int(safe_float(layer.get("paper_local_cluster_gap_minutes")) or 0),
+            "paper_local_peak_min_pct": safe_float(layer.get("paper_local_peak_min_pct")) or 0.0,
+            "paper_local_decay_trigger_pct": safe_float(layer.get("paper_local_decay_trigger_pct")) or 0.0,
         }
     return configs
 
@@ -209,6 +213,7 @@ def default_book_state(strategy_id):
         "entry_armed_at": None,
         "loss_pause_until": None,
         "loss_streak": 0,
+        "symbol_local_state": {},
         "open_orders": [],
         "recent_closed_orders": [],
         "recent_events": [],
@@ -254,6 +259,11 @@ def normalize_book_state(raw_book, strategy_id):
         book["entry_armed_snapshot_id"] = None
         book["entry_armed_at"] = None
     book["open_orders"] = [dict(order) for order in book.get("open_orders") or []]
+    book["symbol_local_state"] = {
+        str(symbol): dict(item)
+        for symbol, item in (book.get("symbol_local_state") or {}).items()
+        if symbol and isinstance(item, dict)
+    }
     book["recent_closed_orders"] = [dict(order) for order in book.get("recent_closed_orders") or []][:RECENT_CLOSED_LIMIT]
     book["recent_events"] = [dict(item) for item in book.get("recent_events") or []][:RECENT_EVENT_LIMIT]
     book["recent_equity_curve"] = [dict(item) for item in book.get("recent_equity_curve") or []][:RECENT_CURVE_LIMIT]
@@ -603,6 +613,94 @@ def structure_filter_blocks(signal, config):
             return "价格已落入近 24h 区间下半区，跳过新开空。"
         return None
     return None
+
+
+def local_guard_enabled(config):
+    return (config.get("paper_local_regime_guard") or "none") == "profit_fading_reentry"
+
+
+def get_symbol_local_state(book, symbol):
+    states = book.setdefault("symbol_local_state", {})
+    return states.setdefault(
+        symbol,
+        {
+            "cluster_anchor_opened_at": None,
+            "cluster_last_closed_at": None,
+            "cluster_cum_realized_pct": 0.0,
+            "cluster_peak_realized_pct": 0.0,
+            "last_phase_state": None,
+        },
+    )
+
+
+def refresh_symbol_local_cluster(local_state, current_opened_at, config):
+    current_dt = parse_dt(current_opened_at)
+    last_closed_dt = parse_dt(local_state.get("cluster_last_closed_at"))
+    gap_minutes = int(config.get("paper_local_cluster_gap_minutes") or 0)
+    if not current_dt or not last_closed_dt or gap_minutes <= 0:
+        return
+    delta_minutes = (current_dt - last_closed_dt).total_seconds() / 60.0
+    if delta_minutes > gap_minutes:
+        local_state["cluster_anchor_opened_at"] = current_opened_at
+        local_state["cluster_last_closed_at"] = None
+        local_state["cluster_cum_realized_pct"] = 0.0
+        local_state["cluster_peak_realized_pct"] = 0.0
+        local_state["last_phase_state"] = None
+
+
+def local_guard_phase_state(local_state, config):
+    peak_min_pct = safe_float(config.get("paper_local_peak_min_pct")) or 0.0
+    decay_trigger_pct = safe_float(config.get("paper_local_decay_trigger_pct")) or 0.0
+    cum_realized_pct = safe_float(local_state.get("cluster_cum_realized_pct")) or 0.0
+    peak_realized_pct = safe_float(local_state.get("cluster_peak_realized_pct")) or 0.0
+    decay_from_peak_pct = peak_realized_pct - cum_realized_pct
+
+    if peak_realized_pct < peak_min_pct:
+        return "pre_peak_reentry"
+    if decay_from_peak_pct < decay_trigger_pct:
+        return "profit_intact_reentry"
+    return "profit_fading_reentry"
+
+
+def local_guard_blocks(book, signal, config):
+    if not local_guard_enabled(config):
+        return None
+    symbol = signal.get("symbol") or ((signal.get("row") or {}).get("symbol"))
+    if not symbol:
+        return None
+    local_state = get_symbol_local_state(book, symbol)
+    current_opened_at = signal.get("captured_at_utc") or ((signal.get("row") or {}).get("captured_at_utc"))
+    refresh_symbol_local_cluster(local_state, current_opened_at, config)
+    phase_state = local_guard_phase_state(local_state, config)
+    local_state["last_phase_state"] = phase_state
+    if phase_state == "profit_fading_reentry":
+        return (
+            f"同币种局部波段利润已从峰值回吐超过 {safe_float(config.get('paper_local_decay_trigger_pct')) or 0:.1f}% ，"
+            "跳过本次同簇重入。"
+        )
+    return None
+
+
+def update_local_guard_after_close(book, closed_order, config):
+    if not local_guard_enabled(config):
+        return
+    symbol = closed_order.get("symbol")
+    if not symbol:
+        return
+    local_state = get_symbol_local_state(book, symbol)
+    opened_at = closed_order.get("entry_time")
+    refresh_symbol_local_cluster(local_state, opened_at, config)
+    if not local_state.get("cluster_anchor_opened_at"):
+        local_state["cluster_anchor_opened_at"] = opened_at
+    local_state["cluster_last_closed_at"] = closed_order.get("close_time")
+    pnl_pct = safe_float(closed_order.get("realized_pnl_pct")) or 0.0
+    next_cum = (safe_float(local_state.get("cluster_cum_realized_pct")) or 0.0) + pnl_pct
+    local_state["cluster_cum_realized_pct"] = next_cum
+    local_state["cluster_peak_realized_pct"] = max(
+        safe_float(local_state.get("cluster_peak_realized_pct")) or 0.0,
+        next_cum,
+    )
+    local_state["last_phase_state"] = local_guard_phase_state(local_state, config)
 
 
 def sort_overlap_score(signal):
@@ -955,6 +1053,7 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
                     pause_until = pause_until + timedelta(minutes=pause_minutes)
                     book["loss_pause_until"] = pause_until.isoformat()
                 book["loss_streak"] = 0
+        update_local_guard_after_close(book, closed_order, config)
         book["total_realized_r"] = (safe_float(book.get("total_realized_r")) or 0) + (safe_float(closed_order.get("realized_r")) or 0)
         book["recent_closed_orders"] = push_recent(book.get("recent_closed_orders"), closed_order, RECENT_CLOSED_LIMIT)
         event = make_event(
@@ -1018,6 +1117,20 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
             continue
         blocked_reason = structure_filter_blocks(signal, config)
         if blocked_reason:
+            continue
+        local_guard_reason = local_guard_blocks(book, signal, config)
+        if local_guard_reason:
+            event = make_event(
+                "blocked",
+                strategy_id,
+                symbol,
+                row.get("name"),
+                config.get("strategy_code"),
+                snapshot_id,
+                captured_at_utc,
+                local_guard_reason,
+            )
+            book["recent_events"] = push_recent(book.get("recent_events"), event, RECENT_EVENT_LIMIT)
             continue
 
         metrics = compute_book_metrics(book)
