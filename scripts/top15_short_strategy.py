@@ -158,7 +158,7 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             {
                 "code": "C++++",
                 "signal_name": "overheat_fade_wide_hold_floor_10_5",
-                "label": "C++++ / Overheat Hold-Floor 10.5",
+                "label": "P0 / C++++ Baseline",
                 "short_label": "C++++层",
                 "entry_filters": [],
                 "requires_no_breakout_exit": False,
@@ -167,6 +167,43 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
                 "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
                 "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
                 "description": "C++ 的止损地板版：入场与持有逻辑保持不变，但当结构止损小于 3% 时，统一抬到 10.5% 再计算 1.5R 止盈；3%~20% 保持原结构止损，大于 20% 仍拒绝。",
+            },
+        ),
+        (
+            "C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m",
+            {
+                "code": "C++++p",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_3l_60m",
+                "label": "P1 / C++++ Pause 3L 60m",
+                "short_label": "C++++p",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
+                "paper_loss_pause_after_losses": 3,
+                "paper_loss_pause_minutes": 60,
+                "description": "C++++ 叠加全局风控版：保留 10.5% 止损地板和 C++ 持仓逻辑，并在虚拟盘内加入连续 3 笔亏损后暂停 60 分钟。",
+            },
+        ),
+        (
+            "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12",
+            {
+                "code": "C++++pp12",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_plus_pos12",
+                "label": "P2 / C++++ Pause + Pos12",
+                "short_label": "C++++p12",
+                "entry_filters": [],
+                "requires_no_breakout_exit": False,
+                "stop_window_min_pct": CONTROL_STOP_WINDOW_MIN_PCT,
+                "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
+                "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
+                "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
+                "paper_loss_pause_after_losses": 3,
+                "paper_loss_pause_minutes": 60,
+                "paper_structure_filter": "pos12_range_le_0_5",
+                "description": "C++++ 组合风控版：在 3 连亏暂停 60 分钟基础上，再增加开仓前 12h 区间位置过滤，若价格已落入近 12h 区间下半区则不再新开空。",
             },
         ),
         (
@@ -540,6 +577,20 @@ def compute_atr_1h_pct(candles, entry_dt, entry_price):
     return (atr_abs / entry_price) * 100 if entry_price else None
 
 
+def compute_position_in_recent_range(candles, entry_dt, hours, entry_price):
+    if entry_price in (None, 0):
+        return None
+    cutoff = entry_dt - timedelta(hours=hours)
+    window = [candle for candle in candles if cutoff < candle["close_dt"] <= entry_dt]
+    if not window:
+        return None
+    window_high = max(candle["high"] for candle in window)
+    window_low = min(candle["low"] for candle in window)
+    if window_high <= window_low:
+        return None
+    return (entry_price - window_low) / (window_high - window_low)
+
+
 def compute_structure_context(row):
     entry_dt = parse_dt(row.get("captured_at_utc"))
     entry_price = get_current_price(row)
@@ -567,6 +618,8 @@ def compute_structure_context(row):
         snapshot_range_1h_pct = ((window_high - window_low) / entry_price) * 100
 
     atr_1h_pct = compute_atr_1h_pct(candles, entry_dt, entry_price)
+    pos_12h_range = compute_position_in_recent_range(candles, entry_dt, 12, entry_price)
+    pos_24h_range = compute_position_in_recent_range(candles, entry_dt, 24, entry_price)
     vol_base_pct = atr_1h_pct if atr_1h_pct is not None else snapshot_range_1h_pct
     vol_source = "kline_1h_atr14" if atr_1h_pct is not None else ("kline_1h_range_proxy" if snapshot_range_1h_pct is not None else None)
     stop_anchor_price = max(front_high_price, entry_price)
@@ -581,6 +634,8 @@ def compute_structure_context(row):
         "structure_front_high_price": front_high_price,
         "structure_stop_anchor_price": stop_anchor_price,
         "structure_atr_1h_pct": atr_1h_pct,
+        "structure_pos_12h_range": pos_12h_range,
+        "structure_pos_24h_range": pos_24h_range,
         "structure_snapshot_range_1h_pct": snapshot_range_1h_pct,
         "structure_vol_base_pct": vol_base_pct,
         "structure_vol_source": vol_source,
@@ -1302,6 +1357,24 @@ def build_shadow_strategy_signals(row):
         "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["signal_name"],
         "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["description"],
         "signal_summary": "C++++ copy：完全复制当前 C++++，用于和冻结前高版本并行对照。",
+    }
+    layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"] = {
+        **layers["C_overheat_fade_wide_hold_floor_10_5"],
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m",
+        "strategy_code": "C++++p",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"]["description"],
+        "signal_summary": "C++++ + 3 连亏暂停 60m：入场、止损地板和持有逻辑与当前 C++++ 一致，但虚拟盘内若连续 3 笔亏损则暂停 60 分钟。",
+    }
+    layers["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"] = {
+        **layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"],
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12",
+        "strategy_code": "C++++p12",
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"]["description"],
+        "signal_summary": "C++++ + 3 连亏暂停 60m + Pos12：在当前 C++++ 基础上，叠加全局暂停和 12h 区间下半区禁开过滤。",
     }
     layers["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"] = {
         **layers["C_overheat_fade_wide_hold_floor_10_5"],

@@ -179,6 +179,9 @@ def build_strategy_book_configs():
             "stop_window_max_pct": safe_float(layer.get("stop_window_max_pct")) or PAPER_TRADER_CONFIG["stop_window_max_pct"],
             "target_r_multiple": safe_float(layer.get("target_r_multiple")) or 1.0,
             "paper_hold_exit_mode": layer.get("paper_hold_exit_mode") or "default",
+            "paper_loss_pause_after_losses": int(safe_float(layer.get("paper_loss_pause_after_losses")) or 0),
+            "paper_loss_pause_minutes": int(safe_float(layer.get("paper_loss_pause_minutes")) or 0),
+            "paper_structure_filter": layer.get("paper_structure_filter") or "none",
         }
     return configs
 
@@ -204,6 +207,8 @@ def default_book_state(strategy_id):
         "entry_live": True,
         "entry_armed_snapshot_id": None,
         "entry_armed_at": None,
+        "loss_pause_until": None,
+        "loss_streak": 0,
         "open_orders": [],
         "recent_closed_orders": [],
         "recent_events": [],
@@ -582,6 +587,24 @@ def strategy_uses_holdable_exit(strategy_id):
     return "wide_hold" in str(strategy_id or "")
 
 
+def structure_filter_blocks(signal, config):
+    filter_name = (config or {}).get("paper_structure_filter") or "none"
+    row = (signal or {}).get("row") or {}
+    pos_12h_range = safe_float(row.get("structure_pos_12h_range"))
+    pos_24h_range = safe_float(row.get("structure_pos_24h_range"))
+    if filter_name == "none":
+        return None
+    if filter_name == "pos12_range_le_0_5":
+        if pos_12h_range is not None and pos_12h_range <= 0.5:
+            return "价格已落入近 12h 区间下半区，跳过新开空。"
+        return None
+    if filter_name == "pos24_range_le_0_5":
+        if pos_24h_range is not None and pos_24h_range <= 0.5:
+            return "价格已落入近 24h 区间下半区，跳过新开空。"
+        return None
+    return None
+
+
 def sort_overlap_score(signal):
     overlap_score = safe_float(signal.get("overlap_score"))
     if overlap_score is None:
@@ -916,10 +939,22 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
         append_order_log(closed_order)
         book["realized_pnl_usd"] = (safe_float(book.get("realized_pnl_usd")) or 0) + (safe_float(closed_order.get("realized_pnl_usd")) or 0)
         book["total_closed_orders"] = int(book.get("total_closed_orders") or 0) + 1
-        if (safe_float(closed_order.get("realized_pnl_usd")) or 0) >= 0:
+        realized_pnl_usd = safe_float(closed_order.get("realized_pnl_usd")) or 0
+        if realized_pnl_usd >= 0:
             book["win_count"] = int(book.get("win_count") or 0) + 1
+            book["loss_streak"] = 0
         else:
             book["loss_count"] = int(book.get("loss_count") or 0) + 1
+            next_loss_streak = int(book.get("loss_streak") or 0) + 1
+            book["loss_streak"] = next_loss_streak
+            pause_after_losses = int(config.get("paper_loss_pause_after_losses") or 0)
+            pause_minutes = int(config.get("paper_loss_pause_minutes") or 0)
+            if pause_after_losses > 0 and pause_minutes > 0 and next_loss_streak >= pause_after_losses:
+                pause_until = parse_dt(captured_at_utc)
+                if pause_until:
+                    pause_until = pause_until + timedelta(minutes=pause_minutes)
+                    book["loss_pause_until"] = pause_until.isoformat()
+                book["loss_streak"] = 0
         book["total_realized_r"] = (safe_float(book.get("total_realized_r")) or 0) + (safe_float(closed_order.get("realized_r")) or 0)
         book["recent_closed_orders"] = push_recent(book.get("recent_closed_orders"), closed_order, RECENT_CLOSED_LIMIT)
         event = make_event(
@@ -976,6 +1011,13 @@ def process_book_snapshot(book, strategy_id, rows_by_symbol, watch_rows_by_symbo
         if not symbol or symbol in closed_symbols:
             continue
         if any(order.get("symbol") == symbol for order in book.get("open_orders") or []):
+            continue
+        pause_until = parse_dt(book.get("loss_pause_until"))
+        snapshot_dt = parse_dt(captured_at_utc)
+        if pause_until and snapshot_dt and snapshot_dt < pause_until:
+            continue
+        blocked_reason = structure_filter_blocks(signal, config)
+        if blocked_reason:
             continue
 
         metrics = compute_book_metrics(book)

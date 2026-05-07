@@ -119,9 +119,31 @@ const FALLBACK_SHADOW_STRATEGIES = {
   },
   C_overheat_fade_wide_hold_floor_10_5: {
     code: 'C++++',
-    label: 'C++++ / Overheat Hold-Floor 10.5',
+    label: 'P0 / C++++ Baseline',
     signal_name: 'overheat_fade_wide_hold_floor_10_5',
     description: 'C++ 的止损地板版：入场与持有逻辑不变，但结构止损小于 3% 时统一抬到 10.5%，并继续使用 1.5R 目标位；大于 20% 仍拒绝开仓。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5,
+    stop_floor_pct: 10.5
+  },
+  C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m: {
+    code: 'C++++p',
+    label: 'P1 / C++++ Pause 3L 60m',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_3l_60m',
+    description: 'C++++ 风控版：保留 10.5% 止损地板和原持仓逻辑，同时加入连续 3 笔亏损后暂停 60 分钟。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5,
+    stop_floor_pct: 10.5
+  },
+  C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12: {
+    code: 'C++++p12',
+    label: 'P2 / C++++ Pause + Pos12',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_plus_pos12',
+    description: 'C++++ 组合风控版：在 3 连亏暂停 60 分钟基础上，再增加近 12h 区间下半区禁开过滤。',
     entry_filters: [],
     stop_window_min_pct: 3,
     stop_window_max_pct: 20,
