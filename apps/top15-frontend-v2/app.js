@@ -128,10 +128,10 @@ const FALLBACK_SHADOW_STRATEGIES = {
     target_r_multiple: 1.5,
     stop_floor_pct: 10.5
   },
-  C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m: {
+  C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1: {
     code: 'C++++p',
     label: 'P1 / C++++ Pause 3L 60m',
-    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_3l_60m',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1',
     description: 'C++++ 风控版：保留 10.5% 止损地板和原持仓逻辑，同时加入连续 3 笔亏损后暂停 60 分钟。',
     entry_filters: [],
     stop_window_min_pct: 3,
@@ -139,10 +139,10 @@ const FALLBACK_SHADOW_STRATEGIES = {
     target_r_multiple: 1.5,
     stop_floor_pct: 10.5
   },
-  C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12: {
+  C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2: {
     code: 'C++++p12',
     label: 'P2 / C++++ Pause + Pos12',
-    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_plus_pos12',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2',
     description: 'C++++ 组合风控版：在 3 连亏暂停 60 分钟基础上，再增加近 12h 区间下半区禁开过滤。',
     entry_filters: [],
     stop_window_min_pct: 3,
@@ -150,11 +150,11 @@ const FALLBACK_SHADOW_STRATEGIES = {
     target_r_multiple: 1.5,
     stop_floor_pct: 10.5
   },
-  C_overheat_fade_wide_hold_floor_10_5_paper_copy: {
+  C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0: {
     code: 'P0',
     label: 'P0 / C++++ Baseline',
-    signal_name: 'overheat_fade_wide_hold_floor_10_5_paper_copy',
-    description: '模拟盘基线对照组：完全复制当前 C++++，用于和 P1 / P2 从同一时点起并行比较。',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_paper_copy_p0',
+    description: '模拟盘基线对照组：完全复制当前 C++++，从全新起点开始，用于和 P1 / P2 并行比较。',
     entry_filters: [],
     stop_window_min_pct: 3,
     stop_window_max_pct: 20,

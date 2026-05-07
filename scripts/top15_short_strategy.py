@@ -170,10 +170,10 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
-            "C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m",
+            "C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1",
             {
                 "code": "C++++p",
-                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_3l_60m",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1",
                 "label": "P1 / C++++ Pause 3L 60m",
                 "short_label": "C++++p",
                 "entry_filters": [],
@@ -188,10 +188,10 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
-            "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12",
+            "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2",
             {
                 "code": "C++++pp12",
-                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_plus_pos12",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2",
                 "label": "P2 / C++++ Pause + Pos12",
                 "short_label": "C++++p12",
                 "entry_filters": [],
@@ -207,10 +207,10 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
             },
         ),
         (
-            "C_overheat_fade_wide_hold_floor_10_5_paper_copy",
+            "C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0",
             {
                 "code": "P0",
-                "signal_name": "overheat_fade_wide_hold_floor_10_5_paper_copy",
+                "signal_name": "overheat_fade_wide_hold_floor_10_5_paper_copy_p0",
                 "label": "P0 / C++++ Baseline",
                 "short_label": "P0",
                 "entry_filters": [],
@@ -219,7 +219,7 @@ SHADOW_STRATEGY_LAYERS = OrderedDict(
                 "stop_window_max_pct": CONTROL_STOP_WINDOW_MAX_PCT,
                 "target_r_multiple": CONTROL_TARGET_R_MULTIPLE,
                 "stop_floor_pct": CONTROL_STOP_FLOOR_PCT,
-                "description": "模拟盘对照组：完全复制当前 C++++，用于从当前时点起和冻结前高版本做并行比较。",
+                "description": "模拟盘对照组：完全复制当前 C++++，从全新起点开始，用于和 P1 / P2 并行比较。",
             },
         ),
         (
@@ -1349,31 +1349,31 @@ def build_shadow_strategy_signals(row):
         "raw_structure_stop_pct": c_floor_stop["raw_structure_stop_pct"],
         "overlap_score": safe_float(enriched.get("overlap_score")),
     }
-    layers["C_overheat_fade_wide_hold_floor_10_5_paper_copy"] = {
+    layers["C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0"] = {
         **layers["C_overheat_fade_wide_hold_floor_10_5"],
-        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_paper_copy",
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0",
         "strategy_code": "P0",
-        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_paper_copy"),
-        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["signal_name"],
-        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy"]["description"],
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0"]["description"],
         "signal_summary": "P0 / C++++ Baseline：完全复制当前 C++++，作为从同一时间起跑的全新基线对照组。",
     }
-    layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"] = {
+    layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1"] = {
         **layers["C_overheat_fade_wide_hold_floor_10_5"],
-        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m",
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1",
         "strategy_code": "C++++p",
-        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"),
-        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"]["signal_name"],
-        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"]["description"],
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1"]["description"],
         "signal_summary": "C++++ + 3 连亏暂停 60m：入场、止损地板和持有逻辑与当前 C++++ 一致，但虚拟盘内若连续 3 笔亏损则暂停 60 分钟。",
     }
-    layers["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"] = {
-        **layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m"],
-        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12",
+    layers["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"] = {
+        **layers["C_overheat_fade_wide_hold_floor_10_5_pause_3l_60m_p1"],
+        "strategy_id": "C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2",
         "strategy_code": "C++++p12",
-        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"),
-        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"]["signal_name"],
-        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12"]["description"],
+        "strategy_label": shadow_layer_label("C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"),
+        "signal_name": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"]["signal_name"],
+        "description": SHADOW_STRATEGY_LAYERS["C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_p2"]["description"],
         "signal_summary": "C++++ + 3 连亏暂停 60m + Pos12：在当前 C++++ 基础上，叠加全局暂停和 12h 区间下半区禁开过滤。",
     }
     layers["C_overheat_fade_wide_hold_floor_10_5_frozen_front_high"] = {
