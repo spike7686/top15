@@ -150,6 +150,17 @@ const FALLBACK_SHADOW_STRATEGIES = {
     target_r_multiple: 1.5,
     stop_floor_pct: 10.5
   },
+  C_overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3: {
+    code: 'P3',
+    label: 'P3 / C++++ Pause + Pos12 + LocalFade',
+    signal_name: 'overheat_fade_wide_hold_floor_10_5_pause_plus_pos12_local_guard_p3',
+    description: 'C++++ 新候选版：在 P2 的 3 连亏暂停 60 分钟 + Pos12 基础上，再加入同币种本地衰竭保护；若同一局部波段已兑现过足够利润且利润开始回吐，则暂停该币后续同簇重入。',
+    entry_filters: [],
+    stop_window_min_pct: 3,
+    stop_window_max_pct: 20,
+    target_r_multiple: 1.5,
+    stop_floor_pct: 10.5
+  },
   C_overheat_fade_wide_hold_floor_10_5_paper_copy_p0: {
     code: 'P0',
     label: 'P0 / C++++ Baseline',
